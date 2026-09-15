@@ -1,0 +1,19 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: gray-whitelist
+  namespace: higress-system
+spec:
+  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.2.0
+  phase: UNSPECIFIED_PHASE
+  priority: 100
+  defaultConfig:
+    redis_cluster: "outbound|6379||aws-redis.dns"
+    redis_database: 15
+    redis_key: gray:whitelist:token-sha256:v1
+    redis_username: "saas"
+    redis_password: "REPLACE_WITH_REDIS_PASSWORD"
+    redis_timeout_ms: 1000
+    refresh_interval_ms: 10000
+    cache_ttl_ms: 60000
+    max_entries: 10000
