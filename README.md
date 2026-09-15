@@ -1,4 +1,4 @@
-# Higress Token 灰度白名单插件 0.2.0
+# Higress Token 灰度白名单插件 0.2.1
 
 Go 编写的 Wasm 插件；Java 管理端负责名单写入，插件只定时读取 Redis 并标记请求。
 
@@ -28,6 +28,9 @@ Go 编写的 Wasm 插件；Java 管理端负责名单写入，插件只定时读
 | refresh_interval_ms | 10000 | 定时同步间隔，毫秒 |
 | cache_ttl_ms | 60000 | 上次成功同步后缓存可用时间，毫秒 |
 | max_entries | 10000 | 接受的最大名单数量 |
+| connectivity_test_enabled | false | 是否启用临时 Redis 写连通性测试 |
+| connectivity_test_key | gray:whitelist:connectivity-test:v1 | INCR 使用的独立测试 Key |
+| connectivity_test_interval_ms | 60000 | 测试写入间隔，毫秒 |
 
 新 Key 与旧用户 ID 名单隔离，不能把旧名单直接复制进来。Java 契约见 JAVA-CONTRACT.md。
 redis_database 代码支持 0–15；AWS Redis Cluster 模式只能使用 DB 0，需按实际实例选择。
@@ -39,6 +42,15 @@ redis_database 代码支持 0–15；AWS Redis Cluster 模式只能使用 DB 0�
 本地缓存属于 Wasm 实例/配置，不是整个集群共享缓存，也不保证一个 Pod 只有一份。
 Redis 调用量约为活动实例数 ÷ 刷新间隔，而不是业务请求量。
 max_entries 是响应接收后的校验，不是 Redis 服务端返回大小限制；Java 写入端也必须限制容量。
+
+### 临时验证 Redis 写连通性
+
+设置 `connectivity_test_enabled: true` 后，每个活动 Wasm 实例每隔配置周期对
+`connectivity_test_key` 执行一次 `INCR`，并记录
+`Redis connectivity write test succeeded; count=N`。它不修改白名单 Set，也不在请求链路执行。
+多个 Gateway Pod、工作线程或匹配配置会分别执行，因此计数增加速度不保证正好是集群每分钟 1；
+这里只用它证明插件经 Envoy Redis Cluster 可以写入。验证完成后关闭开关并删除测试 Key。
+测试账号需要对该 Key 有 INCR/写权限；生产白名单读取账号仍建议使用只读权限。
 
 ## AWS TLS
 
@@ -66,8 +78,8 @@ $env:GOARCH = 'wasm'
 go build -buildmode=c-shared -o main.wasm ./
 Remove-Item Env:GOOS
 Remove-Item Env:GOARCH
-docker build -t YOUR_REGISTRY/gray-whitelist-wasm:0.2.0 .
-docker push YOUR_REGISTRY/gray-whitelist-wasm:0.2.0
+docker build -t YOUR_REGISTRY/gray-whitelist-wasm:0.2.1 .
+docker push YOUR_REGISTRY/gray-whitelist-wasm:0.2.1
 # 先编辑 wasm-plugin.yaml 的镜像、凭据及业务作用域，再应用：
 kubectl apply -f wasm-plugin.yaml
 ```

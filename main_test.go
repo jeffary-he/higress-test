@@ -16,12 +16,37 @@ import (
 
 type fakeRedis struct {
 	wrapper.RedisClient
-	callbacks []wrapper.RedisResponseCallback
+	callbacks     []wrapper.RedisResponseCallback
+	incrCallbacks []wrapper.RedisResponseCallback
+	incrKeys      []string
 }
 
 func (f *fakeRedis) SMembers(_ string, cb wrapper.RedisResponseCallback) error {
 	f.callbacks = append(f.callbacks, cb)
 	return nil
+}
+
+func (f *fakeRedis) Incr(key string, cb wrapper.RedisResponseCallback) error {
+	f.incrKeys = append(f.incrKeys, key)
+	f.incrCallbacks = append(f.incrCallbacks, cb)
+	return nil
+}
+
+func TestConnectivityWriteProbe(t *testing.T) {
+	hosttest.RunGoTest(t, func(t *testing.T) {
+		host, _ := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"test"}`))
+		defer host.Reset()
+		client := &fakeRedis{}
+		r := &runtimeState{
+			cfg:    settings{ConnectivityTestKey: "gray:test"},
+			client: client,
+		}
+		r.writeConnectivityProbe()
+		if len(client.incrKeys) != 1 || client.incrKeys[0] != "gray:test" {
+			t.Fatal("connectivity probe did not increment configured key")
+		}
+		client.incrCallbacks[0](resp.IntegerValue(7))
+	})
 }
 
 func TestRefreshCallbacks(t *testing.T) {
@@ -66,7 +91,8 @@ func TestRefreshCallbacks(t *testing.T) {
 
 func TestSettingsValidation(t *testing.T) {
 	cfg, err := decodeSettings(`{"redis_cluster":"outbound|6379||aws-redis.dns","redis_database":15}`)
-	if err != nil || cfg.Database != 15 || cfg.TTL != 60000 || cfg.Refresh != 10000 {
+	if err != nil || cfg.Database != 15 || cfg.TTL != 60000 || cfg.Refresh != 10000 ||
+		cfg.ConnectivityTestEnabled || cfg.ConnectivityTestPeriod != 60000 {
 		t.Fatal("default config invalid")
 	}
 	for _, bad := range []string{
@@ -74,6 +100,8 @@ func TestSettingsValidation(t *testing.T) {
 		`{"redis_cluster":"x","redis_database":16}`, `{"redis_cluster":"x","redis_database":1.5}`,
 		`{"redis_cluster":"x","cache_ttl_ms":1000}`, `{"redis_cluster":"x","refresh_interval_ms":1001}`,
 		`{"redis_cluster":"x","max_entries":0}`,
+		`{"redis_cluster":"x","connectivity_test_enabled":true,"connectivity_test_key":""}`,
+		`{"redis_cluster":"x","connectivity_test_enabled":true,"connectivity_test_interval_ms":1001}`,
 	} {
 		if _, err := decodeSettings(bad); err == nil {
 			t.Errorf("accepted invalid config: %s", bad)

@@ -4,7 +4,7 @@ metadata:
   name: gray-whitelist
   namespace: higress-system
 spec:
-  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.2.0
+  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.2.1
   phase: UNSPECIFIED_PHASE
   priority: 100
   defaultConfig:
@@ -17,3 +17,7 @@ spec:
     refresh_interval_ms: 10000
     cache_ttl_ms: 60000
     max_entries: 10000
+    # Temporary diagnostic. Enable only while testing Redis write connectivity.
+    connectivity_test_enabled: false
+    connectivity_test_key: gray:whitelist:connectivity-test:v1
+    connectivity_test_interval_ms: 60000

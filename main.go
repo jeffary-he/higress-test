@@ -15,15 +15,18 @@ import (
 )
 
 type settings struct {
-	Cluster    string `json:"redis_cluster"`
-	Database   int    `json:"redis_database"`
-	Key        string `json:"redis_key"`
-	Username   string `json:"redis_username"`
-	Password   string `json:"redis_password"`
-	Timeout    int64  `json:"redis_timeout_ms"`
-	Refresh    int64  `json:"refresh_interval_ms"`
-	TTL        int64  `json:"cache_ttl_ms"`
-	MaxEntries int    `json:"max_entries"`
+	Cluster                 string `json:"redis_cluster"`
+	Database                int    `json:"redis_database"`
+	Key                     string `json:"redis_key"`
+	Username                string `json:"redis_username"`
+	Password                string `json:"redis_password"`
+	Timeout                 int64  `json:"redis_timeout_ms"`
+	Refresh                 int64  `json:"refresh_interval_ms"`
+	TTL                     int64  `json:"cache_ttl_ms"`
+	MaxEntries              int    `json:"max_entries"`
+	ConnectivityTestEnabled bool   `json:"connectivity_test_enabled"`
+	ConnectivityTestKey     string `json:"connectivity_test_key"`
+	ConnectivityTestPeriod  int64  `json:"connectivity_test_interval_ms"`
 }
 
 type Config struct{ runtime *runtimeState }
@@ -40,7 +43,11 @@ func init() {
 }
 
 func decodeSettings(raw string) (settings, error) {
-	cfg := settings{Database: 0, Key: "gray:whitelist:token-sha256:v1", Timeout: 1000, Refresh: 10000, TTL: 60000, MaxEntries: 10000}
+	cfg := settings{
+		Database: 0, Key: "gray:whitelist:token-sha256:v1", Timeout: 1000,
+		Refresh: 10000, TTL: 60000, MaxEntries: 10000,
+		ConnectivityTestKey: "gray:whitelist:connectivity-test:v1", ConnectivityTestPeriod: 60000,
+	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return cfg, errors.New("invalid configuration types")
 	}
@@ -62,6 +69,14 @@ func decodeSettings(raw string) (settings, error) {
 	if cfg.MaxEntries < 1 || cfg.MaxEntries > 100000 {
 		return cfg, errors.New("max_entries must be between 1 and 100000")
 	}
+	if cfg.ConnectivityTestEnabled {
+		if cfg.ConnectivityTestKey == "" {
+			return cfg, errors.New("connectivity_test_key must not be empty when test is enabled")
+		}
+		if cfg.ConnectivityTestPeriod < 1000 || cfg.ConnectivityTestPeriod > 3600000 || cfg.ConnectivityTestPeriod%100 != 0 {
+			return cfg, errors.New("connectivity_test_interval_ms must be a multiple of 100 between 1000 and 3600000")
+		}
+	}
 	return cfg, nil
 }
 
@@ -79,7 +94,25 @@ func parseConfig(js gjson.Result, config *Config) error {
 	// A separate cache per parsed rule prevents cross-rule/config-reload contamination.
 	// First SDK tick initiates loading; requests never wait for Redis.
 	wrapper.RegisterTickFunc(cfg.Refresh, r.refresh)
+	if cfg.ConnectivityTestEnabled {
+		wrapper.RegisterTickFunc(cfg.ConnectivityTestPeriod, r.writeConnectivityProbe)
+	}
 	return nil
+}
+
+// writeConnectivityProbe is an optional deployment diagnostic. It is never
+// called from the request path and does not modify the whitelist Set.
+func (r *runtimeState) writeConnectivityProbe() {
+	err := r.client.Incr(r.cfg.ConnectivityTestKey, func(v resp.Value) {
+		if v.Error() != nil || v.Type() != resp.Integer {
+			proxywasm.LogWarn("gray-whitelist: Redis connectivity write test failed")
+			return
+		}
+		proxywasm.LogInfof("gray-whitelist: Redis connectivity write test succeeded; count=%d", v.Integer())
+	})
+	if err != nil {
+		proxywasm.LogWarn("gray-whitelist: Redis connectivity write test dispatch failed")
+	}
 }
 
 func (r *runtimeState) refresh() {
