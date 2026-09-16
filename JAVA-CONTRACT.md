@@ -7,9 +7,10 @@ Java 管理端维护灰度用户。gray-whitelist 插件从 PC_AUTH_TOKEN 的 JW
 ## Redis 数据格式
 
 - 数据库：示例 DB 15，必须与插件一致。
-- Key：`gray:whitelist:user:v1`。
+- 灰度开关 Key：`gray:whitelist:pc:enabled`，String 值 `1` 表示开启，`0` 表示关闭。
+- 租户 Key：`gray:whitelist:pc:tenant`；用户 ID Key：`gray:whitelist:pc:id`。
 - 类型：Redis Set。
-- Member 有两种：`tenant:<tenantId>` 或 `user:<userId>`，ID 必须是无符号十进制整数的规范字符串。
+- 租户 Set Member 是纯 `tenantId`，用户 Set Member 是纯 `id`，必须是无符号十进制整数的规范字符串。
 - 不允许空值、负数、前导零、空格或附加字段。
 
 例如 JWT Claim：
@@ -18,16 +19,17 @@ Java 管理端维护灰度用户。gray-whitelist 插件从 PC_AUTH_TOKEN 的 JW
 {"tenantId":2,"id":283778812672}
 ```
 
-可以按租户加入全部用户：
+开启灰度并加入租户白名单：
 
 ```text
-tenant:2
+SET gray:whitelist:pc:enabled 1
+SADD gray:whitelist:pc:tenant 2
 ```
 
 也可以只加入指定用户：
 
 ```text
-user:283778812672
+SADD gray:whitelist:pc:id 283778812672
 ```
 
 两者是 OR 关系；任意一个存在即进入灰度。
@@ -35,11 +37,12 @@ user:283778812672
 命令示意：
 
 ```text
-SADD gray:whitelist:user:v1 tenant:2
-SADD gray:whitelist:user:v1 user:283778812672
-SREM gray:whitelist:user:v1 tenant:2
-SREM gray:whitelist:user:v1 user:283778812672
-SMEMBERS gray:whitelist:user:v1
+SADD gray:whitelist:pc:tenant 2
+SADD gray:whitelist:pc:id 283778812672
+SREM gray:whitelist:pc:tenant 2
+SREM gray:whitelist:pc:id 283778812672
+SMEMBERS gray:whitelist:pc:tenant
+SMEMBERS gray:whitelist:pc:id
 ```
 
 管理接口建议明确区分租户白名单和用户白名单，在 Java 中验证 ID 后添加对应前缀。不要从前端接收任意 Redis Member 字符串。

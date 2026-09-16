@@ -26,6 +26,11 @@ func (f *fakeRedis) SMembers(_ string, cb wrapper.RedisResponseCallback) error {
 	return nil
 }
 
+func (f *fakeRedis) Get(_ string, cb wrapper.RedisResponseCallback) error {
+	cb(resp.StringValue("1"))
+	return nil
+}
+
 func (f *fakeRedis) Incr(key string, cb wrapper.RedisResponseCallback) error {
 	f.incrKeys = append(f.incrKeys, key)
 	f.incrCallbacks = append(f.incrCallbacks, cb)
@@ -56,45 +61,36 @@ func TestRefreshCallbacks(t *testing.T) {
 		now := time.Now()
 		client := &fakeRedis{}
 		r := &runtimeState{
-			cfg:    settings{Key: "test", Timeout: 1000, MaxEntries: 10},
+			cfg:    settings{TenantKey: "tenant", UserKey: "user", Timeout: 1000, MaxEntries: 10},
 			client: client, now: func() time.Time { return now },
-			cache: whitelist.NewCache(time.Minute),
+			tenantCache: whitelist.NewCache(time.Minute), userCache: whitelist.NewCache(time.Minute),
 		}
 		selector := "tenant:2"
-		snapshot := resp.ArrayValue([]resp.Value{resp.StringValue(selector)})
+		snapshot := resp.ArrayValue([]resp.Value{resp.StringValue("2")})
 		r.refresh()
-		r.refresh()
-		if len(client.callbacks) != 1 {
-			t.Fatal("overlapping refresh")
+		if len(client.callbacks) != 2 {
+			t.Fatal("tenant and user refreshes were not dispatched")
 		}
 		client.callbacks[0](snapshot)
-		if !r.cache.Contains(selector, now) {
+		client.callbacks[1](resp.ArrayValue([]resp.Value{}))
+		if !r.tenantCache.Contains(selector, now) {
 			t.Fatal("snapshot not loaded")
 		}
 		now = now.Add(10 * time.Second)
 		r.refresh()
-		client.callbacks[1](resp.ErrorValue(errors.New("offline")))
-		if !r.cache.Contains(selector, now) {
-			t.Fatal("failure discarded cache")
-		}
-		now = now.Add(10 * time.Second)
-		r.refresh()
-		now = now.Add(2 * time.Second)
-		r.refresh()
+		client.callbacks[2](resp.ErrorValue(errors.New("offline")))
 		client.callbacks[3](resp.ArrayValue([]resp.Value{}))
-		client.callbacks[2](snapshot)
-		if r.cache.Contains(selector, now) {
-			t.Fatal("late response replaced empty snapshot")
+		if !r.tenantCache.Contains(selector, now) {
+			t.Fatal("failure discarded cache")
 		}
 	})
 }
 
 func TestSettingsValidation(t *testing.T) {
 	cfg, err := decodeSettings(`{"redis_cluster":"outbound|6379||aws-redis.dns","redis_database":15}`)
-	if err != nil || cfg.Database != 15 || cfg.TTL != 60000 || cfg.Refresh != 10000 ||
+	if err != nil || cfg.Database != 15 || cfg.TTL != 60000 || cfg.Refresh != 10000 || cfg.EnabledKey != "gray:whitelist:pc:enabled" ||
 		cfg.TokenCookieName != "PC_AUTH_TOKEN" || cfg.TenantIDClaim != "tenantId" || cfg.UserIDClaim != "id" ||
-		cfg.ConnectivityTestEnabled || cfg.ConnectivityTestPeriod != 60000 ||
-		cfg.ResponseHeaderEnabled || cfg.TrustRequestHeader {
+		cfg.ConnectivityTestEnabled || cfg.ConnectivityTestPeriod != 60000 || !cfg.ResponseHeaderEnabled {
 		t.Fatal("default config invalid")
 	}
 	for _, bad := range []string{
@@ -209,10 +205,13 @@ func TestGatewayHeaderHook(t *testing.T) {
 		}
 		r := cfg.(*Config).runtime
 		now := time.Now()
+		r.grayEnabled = true
+		r.enabledLoaded = true
+		r.enabledAt = now
 		selector := "tenant:2"
 		token := testJWT(`{"tenantId":2,"id":283778812672}`)
-		id, _ := r.cache.Begin(now, time.Second)
-		r.cache.Finish(id, now, now, map[string]struct{}{selector: {}}, true)
+		id, _ := r.tenantCache.Begin(now, time.Second)
+		r.tenantCache.Finish(id, now, now, map[string]struct{}{selector: {}}, true)
 		action := host.CallOnHttpRequestHeaders([][2]string{
 			{":method", "GET"}, {":path", "/"}, {":authority", "example.com"},
 			{"cookie", "_ga=1; PC_AUTH_TOKEN=" + token},
@@ -241,8 +240,8 @@ func TestGatewayHeaderHook(t *testing.T) {
 
 func TestRequestHeaderTakesPrecedence(t *testing.T) {
 	headers := [][2]string{{"x-gray-user", "canary"}, {"cookie", "PC_AUTH_TOKEN=invalid"}}
-	got := resolveStage(headers, true, "PC_AUTH_TOKEN", "tenantId", "id", func(string) bool { return false })
-	if got != "canary" {
-		t.Fatalf("request routing header was not preserved: %s", got)
+	got := resolveStage(headers, "PC_AUTH_TOKEN", "tenantId", "id", func(string) bool { return false })
+	if got != "stable" {
+		t.Fatalf("client routing header should not be trusted: %s", got)
 	}
 }

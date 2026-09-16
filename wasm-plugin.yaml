@@ -4,28 +4,56 @@ metadata:
   name: gray-whitelist
   namespace: higress-system
 spec:
-  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.1
+  # Wasm 镜像地址。
+  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.3
   # 在认证阶段处理请求头，保证 x-gray-user 能参与后续路由匹配。
   phase: AUTHN
+  # 同一执行阶段内的插件优先级，数字越小越优先。
   priority: 100
   defaultConfig:
+    # ==================== Redis 连接配置 ====================
+    # Envoy 中定义的 Redis 上游 Cluster 名称。
     redis_cluster: "outbound|6379||aws-redis.dns"
+    # Redis 数据库编号，取值范围 0-15。
     redis_database: 15
-    redis_key: gray:whitelist:user:v1
+    # Redis 用户名；未启用 ACL 时可留空。
     redis_username: "saas"
+    # Redis 密码；生产环境建议通过 Secret 注入。
     redis_password: "REPLACE_WITH_REDIS_PASSWORD"
+    # Redis 请求超时时间，单位毫秒。
     redis_timeout_ms: 1000
-    refresh_interval_ms: 10000
-    cache_ttl_ms: 60000
-    max_entries: 10000
+
+    # ==================== Redis Key 配置 ====================
+    # 灰度总开关：1 开启，0 关闭。
+    gray_enabled_key: gray:whitelist:pc:enabled
+    # 租户白名单 Set，成员为纯租户 ID，例如 2。
+    redis_tenant_key: gray:whitelist:pc:tenant
+    # 用户白名单 Set，成员为纯用户 ID，例如 283778812672。
+    redis_user_key: gray:whitelist:pc:id
+
+    # ==================== JWT 配置 ====================
+    # Cookie 中保存 JWT 的字段名。
     token_cookie_name: PC_AUTH_TOKEN
+    # JWT Payload 中的租户 ID 字段名。
     tenant_id_claim: tenantId
+    # JWT Payload 中的用户 ID 字段名。
     user_id_claim: id
-    # 灰度判断和请求头转换全部在网关内部完成。
-    response_header_enabled: false
-    # 不信任客户端传入的灰度头，每次根据 Cookie 和本地缓存重新判断。
-    trust_request_header: false
-    # Temporary diagnostic. Enable only while testing Redis write connectivity.
+
+    # ==================== 本地缓存配置 ====================
+    # 从 Redis 同步开关和白名单的间隔，单位毫秒。
+    refresh_interval_ms: 10000
+    # 本地缓存最长有效时间，单位毫秒；超过后默认 stable。
+    cache_ttl_ms: 60000
+    # 单个白名单 Set 允许的最大成员数量。
+    max_entries: 10000
+
+    # ==================== 请求头行为配置 ====================
+    # 灰度判断和请求头转换在网关内部完成，同时将结果返回给前端。
+    response_header_enabled: true
+    # ==================== Redis 连通性测试 ====================
+    # 仅用于临时测试 Redis 写入连通性，正常运行必须关闭。
     connectivity_test_enabled: false
-    connectivity_test_key: gray:whitelist:connectivity-test:v1
+    # 连通性测试执行 INCR 的 Redis Key。
+    connectivity_test_key: gray:whitelist:pc:connectivity-test
+    # 连通性测试间隔，单位毫秒。
     connectivity_test_interval_ms: 60000

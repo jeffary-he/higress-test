@@ -1,4 +1,4 @@
-# Higress 租户/用户灰度白名单插件 0.6.1
+# Higress 租户/用户灰度白名单插件 0.6.3
 
 执行链：PC_AUTH_TOKEN → gray-whitelist 解码 JWT Payload → 提取 tenantId/id → 匹配本地用户白名单 → 网关内部写入请求头 x-gray-user → Higress 路由。前端不需要处理灰度请求头。
 
@@ -9,34 +9,72 @@ Cookie/JWT/Claim 缺失、同名 Token Cookie 重复、非规范无符号整数�
 
 ## 插件配置
 
+WasmPlugin 外层配置：
+
 ```yaml
+url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.3 # Wasm 镜像地址
+phase: AUTHN                                      # 认证阶段，先处理请求头再参与路由
+priority: 100                                     # 同阶段优先级，数字越小越优先
+```
+
+```yaml
+# ==================== Redis 连接配置 ====================
+# Envoy 中定义的 Redis 上游 Cluster 名称。
 redis_cluster: "outbound|6379||aws-redis.dns"
+# Redis 数据库编号，取值范围 0-15。
 redis_database: 15
-redis_key: "gray:whitelist:user:v1"
+# Redis 用户名；未启用 ACL 时可留空。
 redis_username: "saas"
+# Redis 密码；生产环境建议通过 Secret 注入。
 redis_password: "REPLACE_WITH_REDIS_PASSWORD"
+# Redis 请求超时时间，单位毫秒。
 redis_timeout_ms: 1000
-refresh_interval_ms: 10000
-cache_ttl_ms: 60000
-max_entries: 10000
+
+# ==================== Redis Key 配置 ====================
+# 灰度总开关：1 开启，0 关闭。
+gray_enabled_key: "gray:whitelist:pc:enabled"
+# 租户白名单 Set，成员为纯租户 ID，例如 2。
+redis_tenant_key: "gray:whitelist:pc:tenant"
+# 用户白名单 Set，成员为纯用户 ID，例如 283778812672。
+redis_user_key: "gray:whitelist:pc:id"
+
+# ==================== JWT 配置 ====================
+# Cookie 中保存 JWT 的字段名。
 token_cookie_name: "PC_AUTH_TOKEN"
+# JWT Payload 中的租户 ID 字段名。
 tenant_id_claim: "tenantId"
+# JWT Payload 中的用户 ID 字段名。
 user_id_claim: "id"
-response_header_enabled: false
-trust_request_header: false
+
+# ==================== 本地缓存配置 ====================
+# 从 Redis 同步开关和白名单的间隔，单位毫秒。
+refresh_interval_ms: 10000
+# 本地缓存最长有效时间，单位毫秒；超过后默认 stable。
+cache_ttl_ms: 60000
+# 单个白名单 Set 允许的最大成员数量。
+max_entries: 10000
+
+# ==================== 请求头行为配置 ====================
+# true 表示向客户端返回 x-gray-user 响应头，供前端读取。
+response_header_enabled: true
+
+# ==================== Redis 连通性测试 ====================
+# 仅用于临时测试 Redis 写入连通性，正常运行必须关闭。
 connectivity_test_enabled: false
-connectivity_test_key: "gray:whitelist:connectivity-test:v1"
+# 连通性测试执行 INCR 的 Redis Key。
+connectivity_test_key: "gray:whitelist:pc:connectivity-test"
+# 连通性测试间隔，单位毫秒。
 connectivity_test_interval_ms: 60000
 ```
 
-Redis Set 成员必须带类型前缀。两类名单是 OR 关系：
+租户 Set 成员是纯租户 ID，用户 Set 成员是纯用户 ID。两类名单是 OR 关系：
 
 ```text
-SADD gray:whitelist:user:v1 tenant:2
-SADD gray:whitelist:user:v1 user:283778812672
+SADD gray:whitelist:pc:tenant 2
+SADD gray:whitelist:pc:id 283778812672
 ```
 
-插件每 10 秒全量 SMEMBERS，完整校验后原子替换每个 Wasm 实例的本地快照。请求不访问 Redis。
+插件每 10 秒分别对两个 Key 执行全量 SMEMBERS，完整校验后更新每个 Wasm 实例的本地快照。请求不访问 Redis。
 刷新失败保留旧缓存但不续期，60 秒后走 stable；成功读取空 Set 会清空缓存。
 非法成员或超过 max_entries 会拒绝整个新快照。
 
@@ -52,7 +90,7 @@ go test ./...
 go vet ./...
 GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o main.wasm ./
 
-IMAGE="harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.6.0"
+IMAGE="harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.6.3"
 docker build --no-cache -t "$IMAGE" .
 docker push "$IMAGE"
 ```
@@ -60,12 +98,12 @@ docker push "$IMAGE"
 镜像 URL：
 
 ```text
-oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.6.0
+oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.6.3
 ```
 
 ## 验证
 
-插件会在网关内部写入请求头，前端不需要读取或发送该头。首次请求和后续请求都只需要携带原有的 `PC_AUTH_TOKEN` Cookie。
+插件会在网关内部写入请求头，并将结果通过响应头 `x-gray-user` 返回给前端。前端可读取该结果用于页面状态或后续业务逻辑；灰度路由判断仍以网关根据 Cookie 和本地白名单重新计算的结果为准。
 
 路由规则应匹配请求头：
 

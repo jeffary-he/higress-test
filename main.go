@@ -18,7 +18,9 @@ import (
 type settings struct {
 	Cluster                 string `json:"redis_cluster"`
 	Database                int    `json:"redis_database"`
-	Key                     string `json:"redis_key"`
+	TenantKey               string `json:"redis_tenant_key"`
+	UserKey                 string `json:"redis_user_key"`
+	EnabledKey              string `json:"gray_enabled_key"`
 	Username                string `json:"redis_username"`
 	Password                string `json:"redis_password"`
 	Timeout                 int64  `json:"redis_timeout_ms"`
@@ -32,15 +34,19 @@ type settings struct {
 	ConnectivityTestKey     string `json:"connectivity_test_key"`
 	ConnectivityTestPeriod  int64  `json:"connectivity_test_interval_ms"`
 	ResponseHeaderEnabled   bool   `json:"response_header_enabled"`
-	TrustRequestHeader      bool   `json:"trust_request_header"`
 }
 
 type Config struct{ runtime *runtimeState }
 type runtimeState struct {
-	cfg    settings
-	cache  *whitelist.Cache
-	client wrapper.RedisClient
-	now    func() time.Time
+	cfg               settings
+	tenantCache       *whitelist.Cache
+	userCache         *whitelist.Cache
+	grayEnabled       bool
+	enabledAt         time.Time
+	enabledLoaded     bool
+	enabledRefreshing bool
+	client            wrapper.RedisClient
+	now               func() time.Time
 }
 
 func main() {}
@@ -52,18 +58,17 @@ func init() {
 
 func decodeSettings(raw string) (settings, error) {
 	cfg := settings{
-		Database: 0, Key: "gray:whitelist:user:v1", Timeout: 1000,
+		Database: 0, TenantKey: "gray:whitelist:pc:tenant", UserKey: "gray:whitelist:pc:id", EnabledKey: "gray:whitelist:pc:enabled", Timeout: 1000,
 		Refresh: 10000, TTL: 60000, MaxEntries: 10000,
 		TokenCookieName: "PC_AUTH_TOKEN", TenantIDClaim: "tenantId", UserIDClaim: "id",
-		ConnectivityTestKey: "gray:whitelist:connectivity-test:v1", ConnectivityTestPeriod: 60000,
-		ResponseHeaderEnabled: false,
-		TrustRequestHeader: false,
+		ConnectivityTestKey: "gray:whitelist:pc:connectivity-test", ConnectivityTestPeriod: 60000,
+		ResponseHeaderEnabled: true,
 	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return cfg, errors.New("invalid configuration types")
 	}
-	if cfg.Cluster == "" || cfg.Key == "" {
-		return cfg, errors.New("redis_cluster and redis_key must not be empty")
+	if cfg.Cluster == "" || cfg.TenantKey == "" || cfg.UserKey == "" || cfg.EnabledKey == "" {
+		return cfg, errors.New("redis_cluster, gray_enabled_key, redis_tenant_key and redis_user_key must not be empty")
 	}
 	if cfg.Database < 0 || cfg.Database > 15 {
 		return cfg, errors.New("redis_database must be between 0 and 15")
@@ -104,7 +109,11 @@ func parseConfig(js gjson.Result, config *Config) error {
 	if err = client.Init(cfg.Username, cfg.Password, cfg.Timeout, wrapper.WithDataBase(cfg.Database)); err != nil {
 		return errors.New("redis client initialization failed")
 	}
-	r := &runtimeState{cfg: cfg, client: client, now: time.Now, cache: whitelist.NewCache(time.Duration(cfg.TTL) * time.Millisecond)}
+	r := &runtimeState{
+		cfg: cfg, client: client, now: time.Now,
+		tenantCache: whitelist.NewCache(time.Duration(cfg.TTL) * time.Millisecond),
+		userCache:   whitelist.NewCache(time.Duration(cfg.TTL) * time.Millisecond),
+	}
 	config.runtime = r
 	// A separate cache per parsed rule prevents cross-rule/config-reload contamination.
 	// First SDK tick initiates loading; requests never wait for Redis.
@@ -131,25 +140,57 @@ func (r *runtimeState) writeConnectivityProbe() {
 }
 
 func (r *runtimeState) refresh() {
+	r.refreshEnabled()
+	r.refreshKey(r.cfg.TenantKey, r.tenantCache, "tenant", func(raw string) (string, bool) { return whitelist.TenantSelector(raw) })
+	r.refreshKey(r.cfg.UserKey, r.userCache, "user", func(raw string) (string, bool) { return whitelist.UserSelector(raw) })
+}
+
+func (r *runtimeState) refreshEnabled() {
+	if r.enabledRefreshing {
+		return
+	}
+	r.enabledRefreshing = true
+	err := r.client.Get(r.cfg.EnabledKey, func(v resp.Value) {
+		r.enabledRefreshing = false
+		if v.Error() != nil || v.Type() != resp.BulkString || v.IsNull() || (v.String() != "0" && v.String() != "1") {
+			proxywasm.LogWarn("gray-whitelist: invalid gray enabled switch; retaining previous value")
+			return
+		}
+		r.grayEnabled = v.String() == "1"
+		r.enabledAt = r.now()
+		r.enabledLoaded = true
+		proxywasm.LogInfof("gray-whitelist: enabled switch refreshed; enabled=%t", r.grayEnabled)
+	})
+	if err != nil {
+		r.enabledRefreshing = false
+		proxywasm.LogWarn("gray-whitelist: gray enabled switch dispatch failed")
+	}
+}
+
+func (r *runtimeState) isGrayEnabled(now time.Time) bool {
+	return r.enabledLoaded && r.grayEnabled && now.Sub(r.enabledAt) < time.Duration(r.cfg.TTL)*time.Millisecond
+}
+
+func (r *runtimeState) refreshKey(key string, cache *whitelist.Cache, kind string, selector func(string) (string, bool)) {
 	started := r.now()
-	id, ok := r.cache.Begin(started, time.Duration(r.cfg.Timeout)*time.Millisecond)
+	id, ok := cache.Begin(started, time.Duration(r.cfg.Timeout)*time.Millisecond)
 	if !ok {
 		return
 	}
-	err := r.client.SMembers(r.cfg.Key, func(v resp.Value) {
-		next, err := parseSnapshot(v, r.cfg.MaxEntries)
+	err := r.client.SMembers(key, func(v resp.Value) {
+		next, err := parseTypedSnapshot(v, r.cfg.MaxEntries, selector)
 		if err != nil {
-			r.cache.Finish(id, started, r.now(), nil, false)
-			proxywasm.LogWarn("gray-whitelist: refresh rejected; retaining previous snapshot until TTL")
+			cache.Finish(id, started, r.now(), nil, false)
+			proxywasm.LogWarnf("gray-whitelist: %s refresh rejected; retaining previous snapshot until TTL", kind)
 			return
 		}
-		if r.cache.Finish(id, started, r.now(), next, true) {
-			proxywasm.LogInfof("gray-whitelist: refresh succeeded; entries=%d", len(next))
+		if cache.Finish(id, started, r.now(), next, true) {
+			proxywasm.LogInfof("gray-whitelist: %s refresh succeeded; entries=%d", kind, len(next))
 		}
 	})
 	if err != nil {
-		r.cache.Finish(id, started, r.now(), nil, false)
-		proxywasm.LogWarn("gray-whitelist: Redis dispatch failed; retrying on next refresh")
+		cache.Finish(id, started, r.now(), nil, false)
+		proxywasm.LogWarnf("gray-whitelist: %s Redis dispatch failed; retrying on next refresh", kind)
 	}
 }
 
@@ -170,6 +211,24 @@ func parseSnapshot(v resp.Value, max int) (map[string]struct{}, error) {
 	return next, nil
 }
 
+func parseTypedSnapshot(v resp.Value, max int, selector func(string) (string, bool)) (map[string]struct{}, error) {
+	if v.Error() != nil || v.Type() != resp.Array || v.IsNull() || len(v.Array()) > max {
+		return nil, errors.New("invalid Redis response")
+	}
+	next := make(map[string]struct{}, len(v.Array()))
+	for _, member := range v.Array() {
+		if member.Type() != resp.BulkString || member.IsNull() {
+			return nil, errors.New("invalid whitelist member")
+		}
+		value, ok := selector(member.String())
+		if !ok {
+			return nil, errors.New("invalid whitelist member")
+		}
+		next[value] = struct{}{}
+	}
+	return next, nil
+}
+
 func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 	headers, err := proxywasm.GetHttpRequestHeaders()
 	if err != nil {
@@ -181,8 +240,16 @@ func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 		tenantClaim = cfg.runtime.cfg.TenantIDClaim
 		userClaim = cfg.runtime.cfg.UserIDClaim
 	}
-	stage := resolveStage(headers, cfg.runtime != nil && cfg.runtime.cfg.TrustRequestHeader, cookieName, tenantClaim, userClaim, func(identity string) bool {
-		return cfg.runtime != nil && cfg.runtime.cache.Contains(identity, cfg.runtime.now())
+	if cfg.runtime == nil || !cfg.runtime.isGrayEnabled(cfg.runtime.now()) {
+		stage := "stable"
+		if err := proxywasm.ReplaceHttpRequestHeaders(rewriteHeadersWithStage(headers, stage)); err != nil {
+			return headerFailure()
+		}
+		ctx.SetContext("gray-stage", stage)
+		return types.ActionContinue
+	}
+	stage := resolveStage(headers, cookieName, tenantClaim, userClaim, func(identity string) bool {
+		return cfg.runtime != nil && (cfg.runtime.tenantCache.Contains(identity, cfg.runtime.now()) || cfg.runtime.userCache.Contains(identity, cfg.runtime.now()))
 	})
 	output := rewriteHeadersWithStage(headers, stage)
 	// Remove all client gray routing headers. Keep the original Cookie untouched.
@@ -213,13 +280,7 @@ func headerFailure() types.Action {
 	return types.ActionPause
 }
 
-
-func resolveStage(headers [][2]string, trustRequestHeader bool, cookieName, tenantClaim, userClaim string, contains func(string) bool) string {
-	if trustRequestHeader {
-		if stage, ok := findGrayHeader(headers); ok {
-			return stage
-		}
-	}
+func resolveStage(headers [][2]string, cookieName, tenantClaim, userClaim string, contains func(string) bool) string {
 	token, tokenCount := findCookie(headers, cookieName)
 	stage := "stable"
 	if tokenCount == 1 {
@@ -246,23 +307,8 @@ func rewriteHeadersWithStage(headers [][2]string, stage string) [][2]string {
 // rewriteHeaders is retained as a small test/helper API for callers that
 // already provide the resolved stage.
 func rewriteHeaders(headers [][2]string, cookieName, tenantClaim, userClaim string, contains func(string) bool) [][2]string {
-	stage := resolveStage(headers, false, cookieName, tenantClaim, userClaim, contains)
+	stage := resolveStage(headers, cookieName, tenantClaim, userClaim, contains)
 	return rewriteHeadersWithStage(headers, stage)
-}
-
-func findGrayHeader(headers [][2]string) (string, bool) {
-	stage := ""
-	count := 0
-	for _, h := range headers {
-		if !strings.EqualFold(h[0], "x-gray-user") {
-			continue
-		}
-		count++
-		if h[1] == "canary" || h[1] == "stable" {
-			stage = h[1]
-		}
-	}
-	return stage, count == 1 && stage != ""
 }
 
 func findCookie(headers [][2]string, name string) (string, int) {
