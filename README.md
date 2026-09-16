@@ -1,6 +1,6 @@
 # Higress 租户/用户灰度白名单插件 0.6.3
 
-执行链：PC_AUTH_TOKEN → gray-whitelist 解码 JWT Payload → 提取 tenantId/id → 匹配本地用户白名单 → 网关内部写入请求头 x-gray-user → Higress 路由。前端不需要处理灰度请求头。
+执行链：配置的 Cookie 字段名称 → gray-whitelist 解码 JWT Payload → 提取配置的 tenantId/id 字段 → 匹配本地用户白名单 → 网关内部写入请求头 x-gray-user → Higress 路由。默认 Cookie 字段名称为 `PC_AUTH_TOKEN`，前端不需要处理灰度请求头。
 
 插件直接读取 Cookie 中的 `PC_AUTH_TOKEN`，只解码 JWT Payload，不验证签名、issuer、iat 或 exp。按当前业务约定，用户伪造身份进入灰度可以接受，因此该结果不得用于安全鉴权。
 

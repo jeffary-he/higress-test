@@ -1,0 +1,115 @@
+apiVersion: 1.0.0
+info:
+  category: custom
+  name: gray-whitelist
+  title: PC 灰度白名单
+  description: 根据配置的 Cookie 字段名称读取 JWT，从 JWT Payload 的 tenantId 或 id 判断灰度白名单，并在网关内部写入 x-gray-user 请求头。默认 Cookie 字段名称为 PC_AUTH_TOKEN。
+  x-description-i18n:
+    en-US: Determine PC gray traffic by tenantId or id in PC_AUTH_TOKEN and add the x-gray-user request header inside the gateway.
+  version: 0.6.3
+  contact:
+    name: Engineering Team
+    email: engineering@example.com
+spec:
+  phase: AUTHN
+  priority: 100
+  configSchema:
+    openAPIV3Schema:
+      type: object
+      properties:
+        redis_cluster:
+          type: string
+          title: Redis Cluster
+          description: Envoy 中定义的 Redis 上游 Cluster 名称。
+          example: outbound|6379||redis.default.svc.cluster.local
+        redis_database:
+          type: integer
+          title: Redis 数据库
+          description: Redis 数据库编号，范围 0-15。
+          minimum: 0
+          maximum: 15
+          example: 15
+        gray_enabled_key:
+          type: string
+          title: 灰度开关 Key
+          description: Redis String Key，值为 1 开启灰度，0 关闭灰度。
+          example: gray:whitelist:pc:enabled
+        redis_tenant_key:
+          type: string
+          title: 租户白名单 Key
+          description: Redis Set Key，成员为纯租户 ID。
+          example: gray:whitelist:pc:tenant
+        redis_user_key:
+          type: string
+          title: 用户 ID 白名单 Key
+          description: Redis Set Key，成员为纯用户 ID。
+          example: gray:whitelist:pc:id
+        redis_username:
+          type: string
+          title: Redis 用户名
+          description: Redis ACL 用户名，未启用 ACL 时可留空。
+        redis_password:
+          type: string
+          title: Redis 密码
+          description: Redis 认证密码。
+        redis_timeout_ms:
+          type: integer
+          title: Redis 超时时间
+          description: Redis 请求超时时间，单位毫秒。
+          minimum: 100
+          maximum: 60000
+          example: 1000
+        refresh_interval_ms:
+          type: integer
+          title: 刷新间隔
+          description: 从 Redis 同步灰度开关和白名单的间隔，单位毫秒。
+          minimum: 1000
+          example: 10000
+        cache_ttl_ms:
+          type: integer
+          title: 本地缓存 TTL
+          description: 本地缓存最长有效时间，单位毫秒；超过后默认走 stable。
+          minimum: 1000
+          example: 60000
+        max_entries:
+          type: integer
+          title: 最大白名单数量
+          description: 单个白名单 Set 允许的最大成员数量。
+          minimum: 1
+          example: 10000
+        token_cookie_name:
+          type: string
+          title: JWT Cookie 名称
+          description: 保存 JWT 的 Cookie 字段名。
+          example: PC_AUTH_TOKEN
+        tenant_id_claim:
+          type: string
+          title: 租户 Claim
+          description: JWT Payload 中的租户 ID 字段名。
+          example: tenantId
+        user_id_claim:
+          type: string
+          title: 用户 Claim
+          description: JWT Payload 中的用户 ID 字段名。
+          example: id
+        response_header_enabled:
+          type: boolean
+          title: 返回灰度响应头
+          description: 是否向客户端返回 x-gray-user 响应头。
+          default: true
+        connectivity_test_enabled:
+          type: boolean
+          title: Redis 连通性测试
+          description: 是否定时对测试 Key 执行 INCR，仅用于临时诊断。
+          default: false
+        connectivity_test_key:
+          type: string
+          title: 连通性测试 Key
+          description: Redis 连通性测试使用的 INCR Key。
+          example: gray:whitelist:pc:connectivity-test
+        connectivity_test_interval_ms:
+          type: integer
+          title: 连通性测试间隔
+          description: 连通性测试执行间隔，单位毫秒。
+          minimum: 1000
+          example: 60000
