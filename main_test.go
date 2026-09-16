@@ -214,7 +214,7 @@ func TestGatewayHeaderHook(t *testing.T) {
 		r.cache.Finish(id, now, now, map[string]struct{}{selector: {}}, true)
 		action := host.CallOnHttpRequestHeaders([][2]string{
 			{":method", "GET"}, {":path", "/"}, {":authority", "example.com"},
-			{"cookie", "_ga=1; PC_AUTH_TOKEN=" + token}, {"x-gray-user", "stable"},
+			{"cookie", "_ga=1; PC_AUTH_TOKEN=" + token},
 		})
 		if action != types.ActionContinue {
 			t.Fatal("request unexpectedly blocked")
@@ -236,4 +236,12 @@ func TestGatewayHeaderHook(t *testing.T) {
 			t.Fatal("request queried Redis")
 		}
 	})
+}
+
+func TestRequestHeaderTakesPrecedence(t *testing.T) {
+	headers := [][2]string{{"x-gray-user", "canary"}, {"cookie", "PC_AUTH_TOKEN=invalid"}}
+	got := resolveStage(headers, true, "PC_AUTH_TOKEN", "tenantId", "id", func(string) bool { return false })
+	if got != "canary" {
+		t.Fatalf("request routing header was not preserved: %s", got)
+	}
 }

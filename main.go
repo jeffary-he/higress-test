@@ -31,6 +31,8 @@ type settings struct {
 	ConnectivityTestEnabled bool   `json:"connectivity_test_enabled"`
 	ConnectivityTestKey     string `json:"connectivity_test_key"`
 	ConnectivityTestPeriod  int64  `json:"connectivity_test_interval_ms"`
+	ResponseHeaderEnabled   bool   `json:"response_header_enabled"`
+	TrustRequestHeader      bool   `json:"trust_request_header"`
 }
 
 type Config struct{ runtime *runtimeState }
@@ -43,7 +45,9 @@ type runtimeState struct {
 
 func main() {}
 func init() {
-	wrapper.SetCtx("gray-whitelist", wrapper.ParseConfig(parseConfig), wrapper.ProcessRequestHeaders(onRequestHeaders))
+	wrapper.SetCtx("gray-whitelist", wrapper.ParseConfig(parseConfig),
+		wrapper.ProcessRequestHeaders(onRequestHeaders),
+		wrapper.ProcessResponseHeaders(onResponseHeaders))
 }
 
 func decodeSettings(raw string) (settings, error) {
@@ -52,6 +56,8 @@ func decodeSettings(raw string) (settings, error) {
 		Refresh: 10000, TTL: 60000, MaxEntries: 10000,
 		TokenCookieName: "PC_AUTH_TOKEN", TenantIDClaim: "tenantId", UserIDClaim: "id",
 		ConnectivityTestKey: "gray:whitelist:connectivity-test:v1", ConnectivityTestPeriod: 60000,
+		ResponseHeaderEnabled: true,
+		TrustRequestHeader: true,
 	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return cfg, errors.New("invalid configuration types")
@@ -164,7 +170,7 @@ func parseSnapshot(v resp.Value, max int) (map[string]struct{}, error) {
 	return next, nil
 }
 
-func onRequestHeaders(_ wrapper.HttpContext, cfg Config) types.Action {
+func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 	headers, err := proxywasm.GetHttpRequestHeaders()
 	if err != nil {
 		return headerFailure()
@@ -175,12 +181,28 @@ func onRequestHeaders(_ wrapper.HttpContext, cfg Config) types.Action {
 		tenantClaim = cfg.runtime.cfg.TenantIDClaim
 		userClaim = cfg.runtime.cfg.UserIDClaim
 	}
-	output := rewriteHeaders(headers, cookieName, tenantClaim, userClaim, func(identity string) bool {
+	stage := resolveStage(headers, cfg.runtime != nil && cfg.runtime.cfg.TrustRequestHeader, cookieName, tenantClaim, userClaim, func(identity string) bool {
 		return cfg.runtime != nil && cfg.runtime.cache.Contains(identity, cfg.runtime.now())
 	})
+	output := rewriteHeadersWithStage(headers, stage)
 	// Remove all client gray routing headers. Keep the original Cookie untouched.
 	if err := proxywasm.ReplaceHttpRequestHeaders(output); err != nil {
 		return headerFailure()
+	}
+	// Keep the result for the response-header callback. The client can use that
+	// response value on its next request, while the current request is also
+	// routed because x-gray-user was added before route recalculation.
+	ctx.SetContext("gray-stage", stage)
+	return types.ActionContinue
+}
+
+func onResponseHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
+	if cfg.runtime == nil || !cfg.runtime.cfg.ResponseHeaderEnabled {
+		return types.ActionContinue
+	}
+	stage := ctx.GetStringContext("gray-stage", "stable")
+	if err := proxywasm.ReplaceHttpResponseHeader("x-gray-user", stage); err != nil {
+		proxywasm.LogWarn("gray-whitelist: cannot write response routing header")
 	}
 	return types.ActionContinue
 }
@@ -191,14 +213,14 @@ func headerFailure() types.Action {
 	return types.ActionPause
 }
 
-func rewriteHeaders(headers [][2]string, cookieName, tenantClaim, userClaim string, contains func(string) bool) [][2]string {
-	token, tokenCount := findCookie(headers, cookieName)
-	output := make([][2]string, 0, len(headers)+1)
-	for _, h := range headers {
-		if !strings.EqualFold(h[0], "x-gray-user") {
-			output = append(output, h)
+
+func resolveStage(headers [][2]string, trustRequestHeader bool, cookieName, tenantClaim, userClaim string, contains func(string) bool) string {
+	if trustRequestHeader {
+		if stage, ok := findGrayHeader(headers); ok {
+			return stage
 		}
 	}
+	token, tokenCount := findCookie(headers, cookieName)
 	stage := "stable"
 	if tokenCount == 1 {
 		for _, selector := range decodeJWTSelectors(token, tenantClaim, userClaim) {
@@ -208,7 +230,39 @@ func rewriteHeaders(headers [][2]string, cookieName, tenantClaim, userClaim stri
 			}
 		}
 	}
+	return stage
+}
+
+func rewriteHeadersWithStage(headers [][2]string, stage string) [][2]string {
+	output := make([][2]string, 0, len(headers)+1)
+	for _, h := range headers {
+		if !strings.EqualFold(h[0], "x-gray-user") {
+			output = append(output, h)
+		}
+	}
 	return append(output, [2]string{"x-gray-user", stage})
+}
+
+// rewriteHeaders is retained as a small test/helper API for callers that
+// already provide the resolved stage.
+func rewriteHeaders(headers [][2]string, cookieName, tenantClaim, userClaim string, contains func(string) bool) [][2]string {
+	stage := resolveStage(headers, false, cookieName, tenantClaim, userClaim, contains)
+	return rewriteHeadersWithStage(headers, stage)
+}
+
+func findGrayHeader(headers [][2]string) (string, bool) {
+	stage := ""
+	count := 0
+	for _, h := range headers {
+		if !strings.EqualFold(h[0], "x-gray-user") {
+			continue
+		}
+		count++
+		if h[1] == "canary" || h[1] == "stable" {
+			stage = h[1]
+		}
+	}
+	return stage, count == 1 && stage != ""
 }
 
 func findCookie(headers [][2]string, name string) (string, int) {
