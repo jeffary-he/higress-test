@@ -1,37 +1,31 @@
 package whitelist
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestDigestContract(t *testing.T) {
-	const abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-	for _, input := range []string{"abc", "Bearer abc"} {
-		got, ok := Digest(input)
-		if !ok || got != abc {
-			t.Fatalf("digest contract failed")
+func TestSelectorContract(t *testing.T) {
+	tenant, ok := TenantSelector("2")
+	if !ok || tenant != "tenant:2" || !ValidSelector(tenant) {
+		t.Fatal("valid tenant rejected")
+	}
+	user, ok := UserSelector("283778812672")
+	if !ok || user != "user:283778812672" || !ValidSelector(user) {
+		t.Fatal("valid user rejected")
+	}
+	for _, raw := range []string{"", "02", "-1", "a", "18446744073709551616"} {
+		if _, ok := TenantSelector(raw); ok {
+			t.Fatal("invalid tenant accepted")
+		}
+		if _, ok := UserSelector(raw); ok {
+			t.Fatal("invalid user accepted")
 		}
 	}
-	for _, input := range []string{"", "Bearer "} {
-		if _, ok := Digest(input); ok {
-			t.Fatal("empty token accepted")
+	for _, value := range []string{"", "2", "tenant:", "user:", "tenant:02", "user:a", "other:2", "tenant:2:3"} {
+		if ValidSelector(value) {
+			t.Fatal("invalid Redis member accepted")
 		}
-	}
-	for _, input := range []string{"ABC", "bearer abc", "Bearer  abc", "abc\n", "abc "} {
-		got, ok := Digest(input)
-		if !ok || got == abc {
-			t.Fatal("token content changed unexpectedly")
-		}
-	}
-	for _, value := range []string{"", "abc", strings.Repeat("A", 64), strings.Repeat("g", 64)} {
-		if ValidDigest(value) {
-			t.Fatal("invalid digest accepted")
-		}
-	}
-	if !ValidDigest(abc) {
-		t.Fatal("valid digest rejected")
 	}
 }
 
@@ -66,7 +60,7 @@ func TestCacheLifecycle(t *testing.T) {
 	id, _ = c.Begin(recovery, time.Second)
 	c.Finish(id, recovery, recovery, map[string]struct{}{}, true)
 	if c.Contains("b", recovery) {
-		t.Fatal("empty snapshot did not remove old tokens")
+		t.Fatal("empty snapshot did not remove old identities")
 	}
 }
 

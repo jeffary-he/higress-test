@@ -1,9 +1,9 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -60,21 +60,21 @@ func TestRefreshCallbacks(t *testing.T) {
 			client: client, now: func() time.Time { return now },
 			cache: whitelist.NewCache(time.Minute),
 		}
-		digest, _ := whitelist.Digest("abc")
-		snapshot := resp.ArrayValue([]resp.Value{resp.StringValue(digest)})
+		selector := "tenant:2"
+		snapshot := resp.ArrayValue([]resp.Value{resp.StringValue(selector)})
 		r.refresh()
 		r.refresh()
 		if len(client.callbacks) != 1 {
 			t.Fatal("overlapping refresh")
 		}
 		client.callbacks[0](snapshot)
-		if !r.cache.Contains(digest, now) {
+		if !r.cache.Contains(selector, now) {
 			t.Fatal("snapshot not loaded")
 		}
 		now = now.Add(10 * time.Second)
 		r.refresh()
 		client.callbacks[1](resp.ErrorValue(errors.New("offline")))
-		if !r.cache.Contains(digest, now) {
+		if !r.cache.Contains(selector, now) {
 			t.Fatal("failure discarded cache")
 		}
 		now = now.Add(10 * time.Second)
@@ -83,7 +83,7 @@ func TestRefreshCallbacks(t *testing.T) {
 		r.refresh()
 		client.callbacks[3](resp.ArrayValue([]resp.Value{}))
 		client.callbacks[2](snapshot)
-		if r.cache.Contains(digest, now) {
+		if r.cache.Contains(selector, now) {
 			t.Fatal("late response replaced empty snapshot")
 		}
 	})
@@ -92,6 +92,7 @@ func TestRefreshCallbacks(t *testing.T) {
 func TestSettingsValidation(t *testing.T) {
 	cfg, err := decodeSettings(`{"redis_cluster":"outbound|6379||aws-redis.dns","redis_database":15}`)
 	if err != nil || cfg.Database != 15 || cfg.TTL != 60000 || cfg.Refresh != 10000 ||
+		cfg.TokenCookieName != "PC_AUTH_TOKEN" || cfg.TenantIDClaim != "tenantId" || cfg.UserIDClaim != "id" ||
 		cfg.ConnectivityTestEnabled || cfg.ConnectivityTestPeriod != 60000 {
 		t.Fatal("default config invalid")
 	}
@@ -100,6 +101,9 @@ func TestSettingsValidation(t *testing.T) {
 		`{"redis_cluster":"x","redis_database":16}`, `{"redis_cluster":"x","redis_database":1.5}`,
 		`{"redis_cluster":"x","cache_ttl_ms":1000}`, `{"redis_cluster":"x","refresh_interval_ms":1001}`,
 		`{"redis_cluster":"x","max_entries":0}`,
+		`{"redis_cluster":"x","token_cookie_name":"bad name"}`,
+		`{"redis_cluster":"x","tenant_id_claim":"bad.name"}`,
+		`{"redis_cluster":"x","tenant_id_claim":"id","user_id_claim":"id"}`,
 		`{"redis_cluster":"x","connectivity_test_enabled":true,"connectivity_test_key":""}`,
 		`{"redis_cluster":"x","connectivity_test_enabled":true,"connectivity_test_interval_ms":1001}`,
 	} {
@@ -110,8 +114,8 @@ func TestSettingsValidation(t *testing.T) {
 }
 
 func TestSnapshotValidation(t *testing.T) {
-	digest, _ := whitelist.Digest("abc")
-	valid := resp.ArrayValue([]resp.Value{resp.StringValue(digest)})
+	selector := "tenant:2"
+	valid := resp.ArrayValue([]resp.Value{resp.StringValue(selector)})
 	if next, err := parseSnapshot(valid, 1); err != nil || len(next) != 1 {
 		t.Fatal("valid snapshot rejected")
 	}
@@ -120,10 +124,10 @@ func TestSnapshotValidation(t *testing.T) {
 	}
 	for _, v := range []resp.Value{
 		resp.ErrorValue(errors.New("unavailable")), resp.StringValue("OK"), resp.IntegerValue(1),
-		resp.ArrayValue([]resp.Value{resp.StringValue("plain-token")}),
-		resp.ArrayValue([]resp.Value{resp.StringValue(strings.ToUpper(digest))}),
+		resp.ArrayValue([]resp.Value{resp.StringValue("plain-user")}),
+		resp.ArrayValue([]resp.Value{resp.StringValue("tenant:02")}),
 		resp.ArrayValue([]resp.Value{resp.IntegerValue(1)}),
-		resp.ArrayValue([]resp.Value{resp.StringValue(digest), resp.StringValue(digest)}),
+		resp.ArrayValue([]resp.Value{resp.StringValue(selector), resp.StringValue(selector)}),
 	} {
 		if _, err := parseSnapshot(v, 1); err == nil {
 			t.Fatal("invalid/oversized snapshot accepted")
@@ -132,29 +136,63 @@ func TestSnapshotValidation(t *testing.T) {
 }
 
 func TestHeaderMatching(t *testing.T) {
-	digest, _ := whitelist.Digest("AbC123")
+	canaryToken := testJWT(`{"tenantId":2,"id":283778812672}`)
+	stableToken := testJWT(`{"tenantId":3,"id":99}`)
 	for _, tc := range []struct {
-		auth  [][2]string
-		stage string
+		headers [][2]string
+		allowed string
+		stage   string
 	}{
-		{nil, "stable"},
-		{[][2]string{{"Authorization", "Bearer "}}, "stable"},
-		{[][2]string{{"Authorization", "Bearer AbC123"}}, "canary"},
-		{[][2]string{{"authorization", "AbC123"}}, "canary"},
-		{[][2]string{{"Authorization", "Bearer abc123"}}, "stable"},
-		{[][2]string{{"Authorization", "Bearer AbC123"}, {"authorization", "bad"}}, "stable"},
+		{nil, "tenant:2", "stable"},
+		{[][2]string{{"Cookie", "other=1"}}, "tenant:2", "stable"},
+		{[][2]string{{"Cookie", "_ga=1; PC_AUTH_TOKEN=" + canaryToken + "; other=2"}}, "tenant:2", "canary"},
+		{[][2]string{{"Cookie", "PC_AUTH_TOKEN=" + canaryToken}}, "user:283778812672", "canary"},
+		{[][2]string{{"cookie", "PC_AUTH_TOKEN=" + stableToken}}, "tenant:2", "stable"},
+		{[][2]string{{"Cookie", "PC_AUTH_TOKEN=bad.jwt"}}, "tenant:2", "stable"},
+		{[][2]string{{"Cookie", "PC_AUTH_TOKEN=" + canaryToken + "; PC_AUTH_TOKEN=" + stableToken}}, "tenant:2", "stable"},
 	} {
-		in := append([][2]string{{"X-Gray-User", "canary"}, {"x-gray-user", "canary"}}, tc.auth...)
-		out := rewriteHeaders(in, func(d string) bool { return d == digest })
-		if len(out) != len(tc.auth)+1 || out[len(out)-1] != [2]string{"x-gray-user", tc.stage} {
+		in := append([][2]string{{"X-Gray-User", "canary"}, {"x-gray-user", "canary"}}, tc.headers...)
+		out := rewriteHeaders(in, "PC_AUTH_TOKEN", "tenantId", "id", func(v string) bool { return v == tc.allowed })
+		if len(out) != len(tc.headers)+1 || out[len(out)-1] != [2]string{"x-gray-user", tc.stage} {
 			t.Fatal("incorrect routing label/duplicate removal")
 		}
-		for i, h := range tc.auth {
+		for i, h := range tc.headers {
 			if out[i] != h {
-				t.Fatal("Authorization changed")
+				t.Fatal("Cookie changed")
 			}
 		}
 	}
+}
+
+func TestJWTSelectorDecoding(t *testing.T) {
+	for _, payload := range []string{
+		`{"tenantId":2,"id":283778812672}`,
+		`{"tenantId":"2","id":"283778812672"}`,
+	} {
+		got := decodeJWTSelectors(testJWT(payload), "tenantId", "id")
+		if len(got) != 2 || got[0] != "tenant:2" || got[1] != "user:283778812672" {
+			t.Fatal("valid claims rejected")
+		}
+	}
+	if got := decodeJWTSelectors(testJWT(`{"tenantId":2}`), "tenantId", "id"); len(got) != 1 || got[0] != "tenant:2" {
+		t.Fatal("tenant-only selector rejected")
+	}
+	if got := decodeJWTSelectors(testJWT(`{"id":9}`), "tenantId", "id"); len(got) != 1 || got[0] != "user:9" {
+		t.Fatal("user-only selector rejected")
+	}
+	for _, payload := range []string{`{}`, `{"tenantId":"02"}`, `{"tenantId":2.5}`, `{"id":true}`} {
+		if got := decodeJWTSelectors(testJWT(payload), "tenantId", "id"); len(got) != 0 {
+			t.Fatal("invalid claims accepted")
+		}
+	}
+	if got := decodeJWTSelectors("bad.jwt", "tenantId", "id"); len(got) != 0 {
+		t.Fatal("invalid JWT accepted")
+	}
+}
+
+func testJWT(payload string) string {
+	encode := base64.RawURLEncoding.EncodeToString
+	return encode([]byte(`{"alg":"none"}`)) + "." + encode([]byte(payload)) + ".unsigned"
 }
 
 func TestGatewayHeaderHook(t *testing.T) {
@@ -170,12 +208,13 @@ func TestGatewayHeaderHook(t *testing.T) {
 		}
 		r := cfg.(*Config).runtime
 		now := time.Now()
-		digest, _ := whitelist.Digest("AbC123")
+		selector := "tenant:2"
+		token := testJWT(`{"tenantId":2,"id":283778812672}`)
 		id, _ := r.cache.Begin(now, time.Second)
-		r.cache.Finish(id, now, now, map[string]struct{}{digest: {}}, true)
+		r.cache.Finish(id, now, now, map[string]struct{}{selector: {}}, true)
 		action := host.CallOnHttpRequestHeaders([][2]string{
 			{":method", "GET"}, {":path", "/"}, {":authority", "example.com"},
-			{"authorization", "Bearer AbC123"}, {"x-gray-user", "stable"},
+			{"cookie", "_ga=1; PC_AUTH_TOKEN=" + token}, {"x-gray-user", "stable"},
 		})
 		if action != types.ActionContinue {
 			t.Fatal("request unexpectedly blocked")

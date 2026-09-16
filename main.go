@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -24,6 +25,9 @@ type settings struct {
 	Refresh                 int64  `json:"refresh_interval_ms"`
 	TTL                     int64  `json:"cache_ttl_ms"`
 	MaxEntries              int    `json:"max_entries"`
+	TokenCookieName         string `json:"token_cookie_name"`
+	TenantIDClaim           string `json:"tenant_id_claim"`
+	UserIDClaim             string `json:"user_id_claim"`
 	ConnectivityTestEnabled bool   `json:"connectivity_test_enabled"`
 	ConnectivityTestKey     string `json:"connectivity_test_key"`
 	ConnectivityTestPeriod  int64  `json:"connectivity_test_interval_ms"`
@@ -44,8 +48,9 @@ func init() {
 
 func decodeSettings(raw string) (settings, error) {
 	cfg := settings{
-		Database: 0, Key: "gray:whitelist:token-sha256:v1", Timeout: 1000,
+		Database: 0, Key: "gray:whitelist:user:v1", Timeout: 1000,
 		Refresh: 10000, TTL: 60000, MaxEntries: 10000,
+		TokenCookieName: "PC_AUTH_TOKEN", TenantIDClaim: "tenantId", UserIDClaim: "id",
 		ConnectivityTestKey: "gray:whitelist:connectivity-test:v1", ConnectivityTestPeriod: 60000,
 	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
@@ -68,6 +73,10 @@ func decodeSettings(raw string) (settings, error) {
 	}
 	if cfg.MaxEntries < 1 || cfg.MaxEntries > 100000 {
 		return cfg, errors.New("max_entries must be between 1 and 100000")
+	}
+	if !validSimpleName(cfg.TokenCookieName) || !validSimpleName(cfg.TenantIDClaim) ||
+		!validSimpleName(cfg.UserIDClaim) || cfg.TenantIDClaim == cfg.UserIDClaim {
+		return cfg, errors.New("cookie and claim names are invalid")
 	}
 	if cfg.ConnectivityTestEnabled {
 		if cfg.ConnectivityTestKey == "" {
@@ -147,8 +156,8 @@ func parseSnapshot(v resp.Value, max int) (map[string]struct{}, error) {
 	}
 	next := make(map[string]struct{}, len(v.Array()))
 	for _, member := range v.Array() {
-		if member.Type() != resp.BulkString || member.IsNull() || !whitelist.ValidDigest(member.String()) {
-			return nil, errors.New("invalid digest")
+		if member.Type() != resp.BulkString || member.IsNull() || !whitelist.ValidSelector(member.String()) {
+			return nil, errors.New("invalid whitelist selector")
 		}
 		next[member.String()] = struct{}{}
 	}
@@ -160,10 +169,16 @@ func onRequestHeaders(_ wrapper.HttpContext, cfg Config) types.Action {
 	if err != nil {
 		return headerFailure()
 	}
-	output := rewriteHeaders(headers, func(digest string) bool {
-		return cfg.runtime != nil && cfg.runtime.cache.Contains(digest, cfg.runtime.now())
+	cookieName, tenantClaim, userClaim := "PC_AUTH_TOKEN", "tenantId", "id"
+	if cfg.runtime != nil {
+		cookieName = cfg.runtime.cfg.TokenCookieName
+		tenantClaim = cfg.runtime.cfg.TenantIDClaim
+		userClaim = cfg.runtime.cfg.UserIDClaim
+	}
+	output := rewriteHeaders(headers, cookieName, tenantClaim, userClaim, func(identity string) bool {
+		return cfg.runtime != nil && cfg.runtime.cache.Contains(identity, cfg.runtime.now())
 	})
-	// Remove all client gray headers. Keep Authorization untouched; allow rerouting.
+	// Remove all client gray routing headers. Keep the original Cookie untouched.
 	if err := proxywasm.ReplaceHttpRequestHeaders(output); err != nil {
 		return headerFailure()
 	}
@@ -176,24 +191,91 @@ func headerFailure() types.Action {
 	return types.ActionPause
 }
 
-func rewriteHeaders(headers [][2]string, contains func(string) bool) [][2]string {
-	var auth string
-	count := 0
+func rewriteHeaders(headers [][2]string, cookieName, tenantClaim, userClaim string, contains func(string) bool) [][2]string {
+	token, tokenCount := findCookie(headers, cookieName)
 	output := make([][2]string, 0, len(headers)+1)
 	for _, h := range headers {
-		if strings.EqualFold(h[0], "authorization") {
-			auth = h[1]
-			count++
-		}
 		if !strings.EqualFold(h[0], "x-gray-user") {
 			output = append(output, h)
 		}
 	}
 	stage := "stable"
-	if count == 1 {
-		if digest, ok := whitelist.Digest(auth); ok && contains(digest) {
-			stage = "canary"
+	if tokenCount == 1 {
+		for _, selector := range decodeJWTSelectors(token, tenantClaim, userClaim) {
+			if contains(selector) {
+				stage = "canary"
+				break
+			}
 		}
 	}
 	return append(output, [2]string{"x-gray-user", stage})
+}
+
+func findCookie(headers [][2]string, name string) (string, int) {
+	var value string
+	count := 0
+	for _, h := range headers {
+		if !strings.EqualFold(h[0], "cookie") {
+			continue
+		}
+		for _, part := range strings.Split(h[1], ";") {
+			pair := strings.Trim(part, " \t")
+			eq := strings.IndexByte(pair, '=')
+			if eq >= 0 && pair[:eq] == name {
+				value = pair[eq+1:]
+				count++
+			}
+		}
+	}
+	return value, count
+}
+
+func decodeJWTSelectors(token, tenantClaim, userClaim string) []string {
+	if token == "" || len(token) > 16384 {
+		return nil
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || !gjson.ValidBytes(payload) {
+		return nil
+	}
+	selectors := make([]string, 0, 2)
+	if tenantID, ok := claimText(payload, tenantClaim); ok {
+		if selector, valid := whitelist.TenantSelector(tenantID); valid {
+			selectors = append(selectors, selector)
+		}
+	}
+	if userID, ok := claimText(payload, userClaim); ok {
+		if selector, valid := whitelist.UserSelector(userID); valid {
+			selectors = append(selectors, selector)
+		}
+	}
+	return selectors
+}
+
+func claimText(payload []byte, name string) (string, bool) {
+	v := gjson.GetBytes(payload, name)
+	switch v.Type {
+	case gjson.Number:
+		return v.Raw, true
+	case gjson.String:
+		return v.String(), true
+	default:
+		return "", false
+	}
+}
+
+func validSimpleName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }

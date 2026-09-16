@@ -1,29 +1,40 @@
 package whitelist
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"strconv"
 	"strings"
 )
 
-// Java/Go contract: remove one exact "Bearer " prefix; never trim or alter case.
-func Digest(authorization string) (string, bool) {
-	token := strings.TrimPrefix(authorization, "Bearer ")
-	if token == "" {
+func TenantSelector(tenantID string) (string, bool) {
+	if !canonicalUint(tenantID) {
 		return "", false
 	}
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:]), true
+	return "tenant:" + tenantID, true
 }
 
-func ValidDigest(value string) bool {
-	if len(value) != 64 {
+func UserSelector(userID string) (string, bool) {
+	if !canonicalUint(userID) {
+		return "", false
+	}
+	return "user:" + userID, true
+}
+
+func ValidSelector(value string) bool {
+	if raw, ok := strings.CutPrefix(value, "tenant:"); ok {
+		_, valid := TenantSelector(raw)
+		return valid
+	}
+	if raw, ok := strings.CutPrefix(value, "user:"); ok {
+		_, valid := UserSelector(raw)
+		return valid
+	}
+	return false
+}
+
+func canonicalUint(value string) bool {
+	if value == "" {
 		return false
 	}
-	for _, c := range value {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return false
-		}
-	}
-	return true
+	n, err := strconv.ParseUint(value, 10, 64)
+	return err == nil && strconv.FormatUint(n, 10) == value
 }

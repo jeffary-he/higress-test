@@ -1,107 +1,75 @@
-# Higress Token 灰度白名单插件 0.2.1
+# Higress 租户/用户灰度白名单插件 0.6.0
 
-Go 编写的 Wasm 插件；Java 管理端负责名单写入，插件只定时读取 Redis 并标记请求。
+执行链：PC_AUTH_TOKEN → gray-whitelist 解码 JWT Payload → 提取 tenantId/id → 匹配本地用户白名单 → 写入 x-gray-user → Higress 路由。
 
-管理页面 → Java 接口 → Redis Set → Higress Wasm 本地缓存。
-业务请求不查 Redis：读取 Authorization → 摘要匹配本地名单 → 覆盖 x-gray-user → Higress 路由。
+插件直接读取 Cookie 中的 `PC_AUTH_TOKEN`，只解码 JWT Payload，不验证签名、issuer、iat 或 exp。按当前业务约定，用户伪造身份进入灰度可以接受，因此该结果不得用于安全鉴权。
 
-## 行为
+插件生成两个候选项：`tenant:2` 和 `user:283778812672`。任意一个在本地缓存中即写 `x-gray-user: canary`，两者都不在才写 `stable`。
+Cookie/JWT/Claim 缺失、同名 Token Cookie 重复、非规范无符号整数、缓存冷启动或过期时均走 stable。客户端传入的 x-gray-user 总会被覆盖。
 
-- 精确去掉一次 `Bearer ` 前缀，保留 Token 大小写及剩余字符，计算 SHA-256。
-- 命中输出 `x-gray-user: canary`，未命中、缺失、重复 Authorization、冷启动或缓存过期输出 `stable`。
-- 删除客户端传入的所有同名灰度 Header，再写入唯一结果；Authorization 原值保持不变。
-- 不验证 JWT，不读取 x-user-id，不提供管理接口，不写 Redis。
-- 本插件不能替代鉴权。保证鉴权链正常工作，且前置插件不会在此插件读取前删除 Authorization。
+## 插件配置
 
-## Redis 与缓存配置
-
-`wasm-plugin.yaml` 提供配置示例，需要替换镜像地址和密码后才能使用。
-
-| 配置 | 示例值 | 含义 |
-|---|---|---|
-| redis_cluster | outbound\|6379\|\|aws-redis.dns | 完整 Envoy 集群名称，插件不拼接 |
-| redis_database | 15 | 白名单所在 DB |
-| redis_key | gray:whitelist:token-sha256:v1 | 存放摘要的 Redis Set |
-| redis_username | saas | Redis 用户名 |
-| redis_password | 占位符 | Redis 密码 |
-| redis_timeout_ms | 1000 | Redis 调用超时，毫秒 |
-| refresh_interval_ms | 10000 | 定时同步间隔，毫秒 |
-| cache_ttl_ms | 60000 | 上次成功同步后缓存可用时间，毫秒 |
-| max_entries | 10000 | 接受的最大名单数量 |
-| connectivity_test_enabled | false | 是否启用临时 Redis 写连通性测试 |
-| connectivity_test_key | gray:whitelist:connectivity-test:v1 | INCR 使用的独立测试 Key |
-| connectivity_test_interval_ms | 60000 | 测试写入间隔，毫秒 |
-
-新 Key 与旧用户 ID 名单隔离，不能把旧名单直接复制进来。Java 契约见 JAVA-CONTRACT.md。
-redis_database 代码支持 0–15；AWS Redis Cluster 模式只能使用 DB 0，需按实际实例选择。
-密码不会自动展开环境变量；部署时通过受控流程注入，不要提交真实密码或开启会输出配置的 SDK debug 日志。
-
-首次 SDK 定时回调启动同步，首次加载之前走 stable。每次全量 SMEMBERS，校验完整响应后原子替换缓存。
-刷新失败保留旧快照但不续期，满 TTL 后走 stable；成功空名单立即清空缓存。
-超时后后续周期可重试，旧响应晚到不能覆盖较新的快照。
-本地缓存属于 Wasm 实例/配置，不是整个集群共享缓存，也不保证一个 Pod 只有一份。
-Redis 调用量约为活动实例数 ÷ 刷新间隔，而不是业务请求量。
-max_entries 是响应接收后的校验，不是 Redis 服务端返回大小限制；Java 写入端也必须限制容量。
-
-### 临时验证 Redis 写连通性
-
-设置 `connectivity_test_enabled: true` 后，每个活动 Wasm 实例每隔配置周期对
-`connectivity_test_key` 执行一次 `INCR`，并记录
-`Redis connectivity write test succeeded; count=N`。它不修改白名单 Set，也不在请求链路执行。
-多个 Gateway Pod、工作线程或匹配配置会分别执行，因此计数增加速度不保证正好是集群每分钟 1；
-这里只用它证明插件经 Envoy Redis Cluster 可以写入。验证完成后关闭开关并删除测试 Key。
-测试账号需要对该 Key 有 INCR/写权限；生产白名单读取账号仍建议使用只读权限。
-
-## AWS TLS
-
-复用已有 EnvoyFilter 创建的 `outbound|6379||aws-redis.dns` 集群。
-实际 AWS 域名、端口、TLS、SNI、CA 和证书校验仍由该 Envoy 集群负责，不在插件里再次建立 TLS。
-本项目不修改你已验证可用的 TLS 配置。上线前确认目标 Gateway 实际存在该集群，CA 文件存在且证书校验成功。
-
-## 路由与作用域
-
-当前 YAML 使用 defaultConfig，属于全局配置示例。生产部署前限定到目标业务作用域；
-必须同时覆盖该业务的稳定与灰度路由，不能只挂在灰度路由上，否则无法可靠清除伪造 Header。
-沿用现有 Header 灰度路由，将匹配 Header 设为 x-gray-user，匹配值设为 canary。
-stable 应进入稳定服务；排除其他权重或 Cookie 灰度规则干扰，并在真实 Gateway 验证 Header 改写后路由重算。
-本插件不禁用重路由，但本地模拟测试不能证明实际控制面生成的路由配置正确。
-
-## 构建与发布
-
-使用支持 wasip1 c-shared 的 Go 工具链（项目 go.mod 要求 Go 1.24.1 或更高）。
-
-```powershell
-go test ./...
-go vet ./...
-$env:GOOS = 'wasip1'
-$env:GOARCH = 'wasm'
-go build -buildmode=c-shared -o main.wasm ./
-Remove-Item Env:GOOS
-Remove-Item Env:GOARCH
-docker build -t YOUR_REGISTRY/gray-whitelist-wasm:0.2.1 .
-docker push YOUR_REGISTRY/gray-whitelist-wasm:0.2.1
-# 先编辑 wasm-plugin.yaml 的镜像、凭据及业务作用域，再应用：
-kubectl apply -f wasm-plugin.yaml
+```yaml
+redis_cluster: "outbound|6379||aws-redis.dns"
+redis_database: 15
+redis_key: "gray:whitelist:user:v1"
+redis_username: "saas"
+redis_password: "REPLACE_WITH_REDIS_PASSWORD"
+redis_timeout_ms: 1000
+refresh_interval_ms: 10000
+cache_ttl_ms: 60000
+max_entries: 10000
+token_cookie_name: "PC_AUTH_TOKEN"
+tenant_id_claim: "tenantId"
+user_id_claim: "id"
+connectivity_test_enabled: false
+connectivity_test_key: "gray:whitelist:connectivity-test:v1"
+connectivity_test_interval_ms: 60000
 ```
 
-Linux 构建：`GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o main.wasm ./`。
-Dockerfile 只打包已构建的 main.wasm，每次发布必须先重新编译。
-仓库依赖固定版本，无需本地 SDK 路径。
+Redis Set 成员必须带类型前缀。两类名单是 OR 关系：
 
-## 本地验证与上线验收
+```text
+SADD gray:whitelist:user:v1 tenant:2
+SADD gray:whitelist:user:v1 user:283778812672
+```
 
-`go test ./...` 包括摘要、大小写、伪造 Header 覆盖、配置校验、缓存过期、失败保留、超时晚到及 SDK 请求 Hook 测试。
-`java examples/TokenDigest.java` 执行 Java 摘要契约自检（需要支持源码运行的 JDK）。
-`cmd/token-digest` 是从标准输入读取原值的离线摘要工具，不自动去掉换行；勿将真实 Token 放命令行参数。
+插件每 10 秒全量 SMEMBERS，完整校验后原子替换每个 Wasm 实例的本地快照。请求不访问 Redis。
+刷新失败保留旧缓存但不续期，60 秒后走 stable；成功读取空 Set 会清空缓存。
+非法成员或超过 max_entries 会拒绝整个新快照。
 
-上线验收：
+临时设置 `connectivity_test_enabled: true` 后，每个 Wasm 实例按周期对独立测试 Key 执行 INCR 并记录 count；它不修改用户名单。多 Pod/工作实例会分别递增。验证完成后关闭开关并删除测试 Key。
 
-1. Redis 加入测试 Token 摘要，等待刷新，确认命中灰度服务。
-2. 非白名单伪造 x-gray-user: canary，确认仍走稳定服务。
-3. 删除成员，等待刷新，确认回到稳定服务。
-4. 中断 Redis，确认短期使用旧名单，TTL 到期后走稳定服务且业务请求不等待 Redis。
-5. 恢复 Redis，确认自动恢复刷新；多副本网关分别检查。
+## 构建发布
 
-Redis 故障按上述规则降级，并不保证所有故障均不影响业务：插件 Header 宿主操作失败会返回 503；
-Wasm 加载失败或运行时异常的行为还取决于网关配置，需单独演练。
-本地测试和编译不等于已完成 AWS/Higress 集群部署验证。
+直接使用当前环境安装的 Go 版本构建：
+
+```bash
+go version
+go test ./...
+go vet ./...
+GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o main.wasm ./
+
+IMAGE="harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.6.0"
+docker build --no-cache -t "$IMAGE" .
+docker push "$IMAGE"
+```
+
+镜像 URL：
+
+```text
+oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.6.0
+```
+
+## 验证
+
+查看同步日志：
+
+```bash
+kubectl logs -n higress-system -l app=higress-gateway \
+  --all-containers=true --prefix --since=5m | grep 'gray-whitelist:'
+```
+
+成功日志：`gray-whitelist: refresh succeeded; entries=N`。
+将测试用户加入 Redis，等待 10–15 秒，携带包含对应 Claim 的 Cookie 请求；应进入 canary。删除成员并等待同步后应进入 stable。
+Java 管理端数据约定见 JAVA-CONTRACT.md。
