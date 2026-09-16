@@ -56,8 +56,8 @@ func decodeSettings(raw string) (settings, error) {
 		Refresh: 10000, TTL: 60000, MaxEntries: 10000,
 		TokenCookieName: "PC_AUTH_TOKEN", TenantIDClaim: "tenantId", UserIDClaim: "id",
 		ConnectivityTestKey: "gray:whitelist:connectivity-test:v1", ConnectivityTestPeriod: 60000,
-		ResponseHeaderEnabled: true,
-		TrustRequestHeader: true,
+		ResponseHeaderEnabled: false,
+		TrustRequestHeader: false,
 	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return cfg, errors.New("invalid configuration types")

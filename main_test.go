@@ -93,7 +93,8 @@ func TestSettingsValidation(t *testing.T) {
 	cfg, err := decodeSettings(`{"redis_cluster":"outbound|6379||aws-redis.dns","redis_database":15}`)
 	if err != nil || cfg.Database != 15 || cfg.TTL != 60000 || cfg.Refresh != 10000 ||
 		cfg.TokenCookieName != "PC_AUTH_TOKEN" || cfg.TenantIDClaim != "tenantId" || cfg.UserIDClaim != "id" ||
-		cfg.ConnectivityTestEnabled || cfg.ConnectivityTestPeriod != 60000 {
+		cfg.ConnectivityTestEnabled || cfg.ConnectivityTestPeriod != 60000 ||
+		cfg.ResponseHeaderEnabled || cfg.TrustRequestHeader {
 		t.Fatal("default config invalid")
 	}
 	for _, bad := range []string{

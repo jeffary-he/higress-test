@@ -4,7 +4,7 @@ metadata:
   name: gray-whitelist
   namespace: higress-system
 spec:
-  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.0
+  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.1
   # 在认证阶段处理请求头，保证 x-gray-user 能参与后续路由匹配。
   phase: AUTHN
   priority: 100
@@ -21,10 +21,10 @@ spec:
     token_cookie_name: PC_AUTH_TOKEN
     tenant_id_claim: tenantId
     user_id_claim: id
-    # 将本次判断结果返回给前端，前端可用于下一次请求。
-    response_header_enabled: true
-    # 下一次请求带有 canary/stable 时沿用该请求头。
-    trust_request_header: true
+    # 灰度判断和请求头转换全部在网关内部完成。
+    response_header_enabled: false
+    # 不信任客户端传入的灰度头，每次根据 Cookie 和本地缓存重新判断。
+    trust_request_header: false
     # Temporary diagnostic. Enable only while testing Redis write connectivity.
     connectivity_test_enabled: false
     connectivity_test_key: gray:whitelist:connectivity-test:v1
