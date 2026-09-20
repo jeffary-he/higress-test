@@ -58,7 +58,7 @@ func init() {
 
 func decodeSettings(raw string) (settings, error) {
 	cfg := settings{
-		Database: 0, TenantKey: "gray:whitelist:pc:tenant", UserKey: "gray:whitelist:pc:id", EnabledKey: "gray:whitelist:pc:enabled", Timeout: 1000,
+		Database: 0, TenantKey: "gray:whitelist:pc:tenantId", UserKey: "gray:whitelist:pc:userId", EnabledKey: "gray:whitelist:pc:enabled", Timeout: 1000,
 		Refresh: 10000, TTL: 60000, MaxEntries: 10000,
 		TokenCookieName: "PC_AUTH_TOKEN", TenantIDClaim: "tenantId", UserIDClaim: "id",
 		ConnectivityTestKey: "gray:whitelist:pc:connectivity-test", ConnectivityTestPeriod: 60000,

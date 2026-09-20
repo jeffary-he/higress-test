@@ -27,9 +27,9 @@ spec:
     # 灰度总开关：1 开启，0 关闭。
     gray_enabled_key: gray:whitelist:pc:enabled
     # 租户白名单 Set，成员为纯租户 ID，例如 2。
-    redis_tenant_key: gray:whitelist:pc:tenant
+    redis_tenant_key: gray:whitelist:pc:tenantId
     # 用户白名单 Set，成员为纯用户 ID，例如 283778812672。
-    redis_user_key: gray:whitelist:pc:id
+    redis_user_key: gray:whitelist:pc:userId
 
     # ==================== JWT 配置 ====================
     # Cookie 中保存 JWT 的字段名。

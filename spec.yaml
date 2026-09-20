@@ -38,12 +38,12 @@ spec:
           type: string
           title: 租户白名单 Key
           description: Redis Set Key，成员为纯租户 ID。
-          example: gray:whitelist:pc:tenant
+          example: gray:whitelist:pc:tenantId
         redis_user_key:
           type: string
           title: 用户 ID 白名单 Key
           description: Redis Set Key，成员为纯用户 ID。
-          example: gray:whitelist:pc:id
+          example: gray:whitelist:pc:userId
         redis_username:
           type: string
           title: Redis 用户名

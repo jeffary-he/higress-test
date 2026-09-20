@@ -11,6 +11,8 @@ Cookie/JWT/Claim 缺失、同名 Token Cookie 重复、非规范无符号整数�
 
 WasmPlugin 外层配置：
 
+插件描述：根据配置的 Cookie 字段名称读取 JWT，从 JWT Payload 的 `tenantId` 或 `id` 判断灰度白名单，并在网关内部写入 `x-gray-user` 请求头，由 Higress 根据该请求头将请求路由到灰度或正常服务。
+
 ```yaml
 url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.3 # Wasm 镜像地址
 phase: AUTHN                                      # 认证阶段，先处理请求头再参与路由
@@ -34,9 +36,9 @@ redis_timeout_ms: 1000
 # 灰度总开关：1 开启，0 关闭。
 gray_enabled_key: "gray:whitelist:pc:enabled"
 # 租户白名单 Set，成员为纯租户 ID，例如 2。
-redis_tenant_key: "gray:whitelist:pc:tenant"
+redis_tenant_key: "gray:whitelist:pc:tenantId"
 # 用户白名单 Set，成员为纯用户 ID，例如 283778812672。
-redis_user_key: "gray:whitelist:pc:id"
+redis_user_key: "gray:whitelist:pc:userId"
 
 # ==================== JWT 配置 ====================
 # Cookie 中保存 JWT 的字段名。
@@ -70,9 +72,39 @@ connectivity_test_interval_ms: 60000
 租户 Set 成员是纯租户 ID，用户 Set 成员是纯用户 ID。两类名单是 OR 关系：
 
 ```text
-SADD gray:whitelist:pc:tenant 2
-SADD gray:whitelist:pc:id 283778812672
+SADD gray:whitelist:pc:tenantId 2
+SADD gray:whitelist:pc:userId 283778812672
 ```
+
+### 灰度开关配置
+
+灰度开关是 Redis String 类型，Key 必须与 `gray_enabled_key` 配置一致，值只能是字符串 `1` 或 `0`：
+
+```bash
+# 开启灰度
+SET gray:whitelist:pc:enabled 1
+
+# 关闭灰度
+SET gray:whitelist:pc:enabled 0
+
+# 查看开关值
+GET gray:whitelist:pc:enabled
+```
+
+正常情况下 `GET` 应返回：
+
+```text
+1
+```
+
+如果日志出现 `invalid gray enabled switch`，请检查：
+
+```bash
+TYPE gray:whitelist:pc:enabled
+GET gray:whitelist:pc:enabled
+```
+
+`TYPE` 必须返回 `string`，`GET` 必须返回 `1` 或 `0`。不能写成 `true`、`false`、`on`、`off`，也不能使用 `SADD` 写入开关 Key。Key 不存在或值为空时，插件会保留上一次状态；如果从未成功加载，则按安全策略关闭灰度，所有请求走 `stable`。
 
 插件每 10 秒分别对两个 Key 执行全量 SMEMBERS，完整校验后更新每个 Wasm 实例的本地快照。请求不访问 Redis。
 刷新失败保留旧缓存但不续期，60 秒后走 stable；成功读取空 Set 会清空缓存。
@@ -122,4 +154,3 @@ kubectl logs -n higress-system -l app=higress-gateway \
 
 成功日志：`gray-whitelist: refresh succeeded; entries=N`。
 将测试用户加入 Redis，等待 10–15 秒，携带包含对应 Claim 的 Cookie 请求；应进入 canary。删除成员并等待同步后应进入 stable。
-Java 管理端数据约定见 JAVA-CONTRACT.md。
