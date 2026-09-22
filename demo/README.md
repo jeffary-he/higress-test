@@ -15,18 +15,16 @@ PC_AUTH_TOKEN Cookie
 
 ## 1. 构建镜像
 
-将 `YOUR_REGISTRY` 替换为镜像仓库：
-
 ```bash
-docker build -t YOUR_REGISTRY/gray-demo-api:stable ./api
-docker build -t YOUR_REGISTRY/gray-demo-api:canary ./api
-docker build --build-arg DEMO_VERSION=stable -t YOUR_REGISTRY/gray-demo-frontend:stable ./frontend
-docker build --build-arg DEMO_VERSION=canary -t YOUR_REGISTRY/gray-demo-frontend:canary ./frontend
+docker build -t harbor-ningxia.pontosense.net/base-image/gray-demo-api:stable ./api
+docker build -t harbor-ningxia.pontosense.net/base-image/gray-demo-api:canary ./api
+docker build -t harbor-ningxia.pontosense.net/base-image/gray-demo-frontend:stable ./frontend/stable
+docker build -t harbor-ningxia.pontosense.net/base-image/gray-demo-frontend:canary ./frontend/canary
 
-docker push YOUR_REGISTRY/gray-demo-api:stable
-docker push YOUR_REGISTRY/gray-demo-api:canary
-docker push YOUR_REGISTRY/gray-demo-frontend:stable
-docker push YOUR_REGISTRY/gray-demo-frontend:canary
+docker push harbor-ningxia.pontosense.net/base-image/gray-demo-api:stable
+docker push harbor-ningxia.pontosense.net/base-image/gray-demo-api:canary
+docker push harbor-ningxia.pontosense.net/base-image/gray-demo-frontend:stable
+docker push harbor-ningxia.pontosense.net/base-image/gray-demo-frontend:canary
 ```
 
 将 `k8s/apps.yaml` 中的镜像地址替换为同样的仓库。
@@ -46,7 +44,7 @@ kubectl apply -f k8s/ingress.yaml
 将根目录的 `wasm-plugin.yaml` 复制为环境配置，并修改：
 
 ```yaml
-url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.5
+url: oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.6.5
 ```
 
 Demo 的 API 路由必须绑定 `gray-whitelist` 插件。插件只绑定 `/api` 路由，不绑定前端静态资源路由；前端静态资源由 Higress 的 Cookie 灰度规则处理。
@@ -104,7 +102,7 @@ x-frontend-gray-refresh: true
 https://gray-demo.example.com/
 ```
 
-前端调用 `/api/gray/status` 后，检测到 `x-frontend-gray-refresh: true` 会刷新页面；刷新后的前端资源携带 `x-gray-user=always`，进入 `gray-demo-frontend-canary`。
+stable 和 canary 使用两套实际不同的 HTML 页面。前端调用 `/api/gray/status` 后，页面会展示后端返回的实际版本；检测到 `x-frontend-gray-refresh: true` 时刷新页面。刷新后的前端资源携带 `x-gray-user=always`，进入 `gray-demo-frontend-canary`。
 
 ## 6. 关闭灰度
 

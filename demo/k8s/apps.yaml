@@ -13,7 +13,7 @@ spec:
     spec:
       containers:
       - name: api
-        image: YOUR_REGISTRY/gray-demo-api:stable
+        image: harbor-ningxia.pontosense.net/base-image/gray-demo-api:stable
         env:
         - name: DEMO_VERSION
           value: stable
@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
       - name: api
-        image: YOUR_REGISTRY/gray-demo-api:canary
+        image: harbor-ningxia.pontosense.net/base-image/gray-demo-api:canary
         env:
         - name: DEMO_VERSION
           value: canary
@@ -75,7 +75,7 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: YOUR_REGISTRY/gray-demo-frontend:stable
+        image: harbor-ningxia.pontosense.net/base-image/gray-demo-frontend:stable
         ports: [{ name: http, containerPort: 80 }]
 ---
 apiVersion: apps/v1
@@ -93,7 +93,7 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: YOUR_REGISTRY/gray-demo-frontend:canary
+        image: harbor-ningxia.pontosense.net/base-image/gray-demo-frontend:canary
         ports: [{ name: http, containerPort: 80 }]
 ---
 apiVersion: v1
