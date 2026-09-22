@@ -28,12 +28,14 @@ function reloadIfNeeded(response) {
 
   const key = 'gray-refresh-at';
   const lastRefresh = Number(sessionStorage.getItem(key) || '0');
-  if (Date.now() - lastRefresh < 15000) {
+  if (Date.now() - lastRefresh < 5000) {
     return false;
   }
 
   sessionStorage.setItem(key, String(Date.now()));
-  window.location.reload();
+  const url = new URL(window.location.href);
+  url.searchParams.set('_gray_refresh', String(Date.now()));
+  window.location.replace(url.toString());
   return true;
 }
 

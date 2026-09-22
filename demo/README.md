@@ -104,7 +104,7 @@ https://canary.pontosense.net/
 
 stable 和 canary 使用两套实际不同的 HTML 页面。前端调用 `/api/gray/status` 后，页面会展示后端返回的实际版本；检测到 `x-frontend-gray-refresh: true` 时刷新页面。刷新后的前端资源携带 `x-gray-user=always`，进入 `gray-demo-frontend-canary`。
 
-页面首次加载后还会每 10 秒轮询一次 `/api/gray/status`。当插件返回 `x-frontend-gray-refresh: true` 且距离上次刷新超过 15 秒时，前端才刷新页面；15 秒内重复收到刷新头会忽略，防止多个 Gateway 实例缓存短暂不一致导致重复刷新。后端容器会打印每次 API 请求的访问日志，可使用 `kubectl logs` 查看。
+页面首次加载后还会每 10 秒轮询一次 `/api/gray/status`。当插件返回 `x-frontend-gray-refresh: true` 且距离上次刷新超过 5 秒时，前端立即给当前 URL 增加 `_gray_refresh` 时间戳并重新加载，以绕过旧页面缓存；5 秒内重复收到刷新头会忽略，防止多个 Gateway 实例缓存短暂不一致导致重复刷新。后端容器会打印每次 API 请求的访问日志，可使用 `kubectl logs` 查看。
 
 ## 6. 关闭灰度
 
