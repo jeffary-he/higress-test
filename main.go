@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -34,6 +35,8 @@ type settings struct {
 	ConnectivityTestKey     string `json:"connectivity_test_key"`
 	ConnectivityTestPeriod  int64  `json:"connectivity_test_interval_ms"`
 	ResponseHeaderEnabled   bool   `json:"response_header_enabled"`
+	FrontendCookieName      string `json:"frontend_gray_cookie_name"`
+	FrontendCookieDomain    string `json:"frontend_gray_cookie_domain"`
 }
 
 type Config struct{ runtime *runtimeState }
@@ -63,6 +66,7 @@ func decodeSettings(raw string) (settings, error) {
 		TokenCookieName: "PC_AUTH_TOKEN", TenantIDClaim: "tenantId", UserIDClaim: "id",
 		ConnectivityTestKey: "gray:whitelist:pc:connectivity-test", ConnectivityTestPeriod: 60000,
 		ResponseHeaderEnabled: true,
+		FrontendCookieName:    "x-gray-user",
 	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return cfg, errors.New("invalid configuration types")
@@ -88,6 +92,9 @@ func decodeSettings(raw string) (settings, error) {
 	if !validSimpleName(cfg.TokenCookieName) || !validSimpleName(cfg.TenantIDClaim) ||
 		!validSimpleName(cfg.UserIDClaim) || cfg.TenantIDClaim == cfg.UserIDClaim {
 		return cfg, errors.New("cookie and claim names are invalid")
+	}
+	if !validSimpleName(cfg.FrontendCookieName) {
+		return cfg, errors.New("frontend gray cookie name is invalid")
 	}
 	if cfg.ConnectivityTestEnabled {
 		if cfg.ConnectivityTestKey == "" {
@@ -246,6 +253,7 @@ func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 			return headerFailure()
 		}
 		ctx.SetContext("gray-stage", stage)
+		trackFrontendCookie(ctx, headers, cfg.runtime, stage)
 		return types.ActionContinue
 	}
 	stage := resolveStage(headers, cookieName, tenantClaim, userClaim, func(identity string) bool {
@@ -260,18 +268,81 @@ func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 	// response value on its next request, while the current request is also
 	// routed because x-gray-user was added before route recalculation.
 	ctx.SetContext("gray-stage", stage)
+	trackFrontendCookie(ctx, headers, cfg.runtime, stage)
 	return types.ActionContinue
 }
 
 func onResponseHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
-	if cfg.runtime == nil || !cfg.runtime.cfg.ResponseHeaderEnabled {
+	if cfg.runtime == nil {
+		return types.ActionContinue
+	}
+	// Do not mutate redirects or error responses. Login redirects must pass
+	// through untouched; the first successful authenticated API response will
+	// establish or clear the frontend gray cookie.
+	if !isSuccessfulResponse() {
 		return types.ActionContinue
 	}
 	stage := ctx.GetStringContext("gray-stage", "stable")
-	if err := proxywasm.ReplaceHttpResponseHeader("x-gray-user", stage); err != nil {
-		proxywasm.LogWarn("gray-whitelist: cannot write response routing header")
+	if cfg.runtime.cfg.ResponseHeaderEnabled {
+		if err := proxywasm.ReplaceHttpResponseHeader("x-gray-user", stage); err != nil {
+			proxywasm.LogWarn("gray-whitelist: cannot write response routing header")
+		}
+	}
+	shouldUpdateCookie := ctx.GetStringContext("frontend-gray-refresh", "false") == "true"
+	if shouldUpdateCookie {
+		cookie := buildFrontendGrayCookie(cfg.runtime.cfg, stage)
+		if err := proxywasm.AddHttpResponseHeader("Set-Cookie", cookie); err != nil {
+			proxywasm.LogWarn("gray-whitelist: cannot write frontend gray cookie")
+		}
+		if err := proxywasm.AddHttpResponseHeader("x-frontend-gray-refresh", "true"); err != nil {
+			proxywasm.LogWarn("gray-whitelist: cannot write frontend gray refresh header")
+		}
 	}
 	return types.ActionContinue
+}
+
+func isSuccessfulResponse() bool {
+	status, err := proxywasm.GetHttpResponseHeader(":status")
+	if err != nil || status == "" {
+		// Keep unit-test and hosts that do not expose :status compatible.
+		return true
+	}
+	return len(status) == 3 && status[0] == '2' && status[1] >= '0' && status[1] <= '9' && status[2] >= '0' && status[2] <= '9'
+}
+
+func trackFrontendCookie(ctx wrapper.HttpContext, headers [][2]string, runtime *runtimeState, stage string) {
+	if runtime == nil {
+		return
+	}
+	value, count := findCookie(headers, runtime.cfg.FrontendCookieName)
+	if count == 1 && value == "always" {
+		ctx.SetContext("frontend-gray-cookie", "always")
+	} else {
+		ctx.SetContext("frontend-gray-cookie", "")
+	}
+	currentCookie := ctx.GetStringContext("frontend-gray-cookie", "")
+	transition := (stage == "canary" && currentCookie != "always") || (stage == "stable" && currentCookie == "always")
+	if transition {
+		ctx.SetContext("frontend-gray-refresh", "true")
+	} else {
+		ctx.SetContext("frontend-gray-refresh", "false")
+	}
+}
+
+func buildFrontendGrayCookie(cfg settings, stage string) string {
+	if stage == "canary" {
+		cookie := fmt.Sprintf("%s=always; Path=/; Secure; HttpOnly; SameSite=Lax", cfg.FrontendCookieName)
+		if cfg.FrontendCookieDomain != "" {
+			cookie += "; Domain=" + cfg.FrontendCookieDomain
+		}
+		return cookie
+	}
+	// Clear a previous canary cookie when the request is no longer eligible.
+	cookie := fmt.Sprintf("%s=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; HttpOnly; SameSite=Lax", cfg.FrontendCookieName)
+	if cfg.FrontendCookieDomain != "" {
+		cookie += "; Domain=" + cfg.FrontendCookieDomain
+	}
+	return cookie
 }
 
 func headerFailure() types.Action {

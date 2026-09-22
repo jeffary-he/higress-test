@@ -1,0 +1,130 @@
+# 前后端灰度发布 Demo
+
+本 Demo 按 `gray-whitelist-wasm 0.6.5` 的实际逻辑验证完整链路：
+
+```text
+PC_AUTH_TOKEN Cookie
+  -> gray-whitelist 解析 JWT
+  -> Redis 白名单和灰度开关
+  -> x-gray-user: canary/stable
+  -> Higress API 路由选择后端版本
+  -> API 返回 x-frontend-gray-refresh
+  -> Set-Cookie: x-gray-user=always
+  -> Higress 前端 Cookie 路由选择静态资源版本
+```
+
+## 1. 构建镜像
+
+将 `YOUR_REGISTRY` 替换为镜像仓库：
+
+```bash
+docker build -t YOUR_REGISTRY/gray-demo-api:stable ./api
+docker build -t YOUR_REGISTRY/gray-demo-api:canary ./api
+docker build --build-arg DEMO_VERSION=stable -t YOUR_REGISTRY/gray-demo-frontend:stable ./frontend
+docker build --build-arg DEMO_VERSION=canary -t YOUR_REGISTRY/gray-demo-frontend:canary ./frontend
+
+docker push YOUR_REGISTRY/gray-demo-api:stable
+docker push YOUR_REGISTRY/gray-demo-api:canary
+docker push YOUR_REGISTRY/gray-demo-frontend:stable
+docker push YOUR_REGISTRY/gray-demo-frontend:canary
+```
+
+将 `k8s/apps.yaml` 中的镜像地址替换为同样的仓库。
+
+## 2. 部署应用和路由
+
+```bash
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/apps.yaml
+kubectl apply -f k8s/ingress.yaml
+```
+
+`gray-demo.example.com` 需要解析到 Higress Gateway。生产测试时替换为实际域名。
+
+## 3. 配置 0.6.5 插件
+
+将根目录的 `wasm-plugin.yaml` 复制为环境配置，并修改：
+
+```yaml
+url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.5
+```
+
+Demo 的 API 路由必须绑定 `gray-whitelist` 插件。插件只绑定 `/api` 路由，不绑定前端静态资源路由；前端静态资源由 Higress 的 Cookie 灰度规则处理。
+
+插件配置的 Redis Key 使用：
+
+```yaml
+gray_enabled_key: gray:whitelist:pc:enabled
+redis_tenant_key: gray:whitelist:pc:tenantId
+redis_user_key: gray:whitelist:pc:userId
+token_cookie_name: PC_AUTH_TOKEN
+frontend_gray_cookie_name: x-gray-user
+frontend_gray_cookie_domain: ""
+```
+
+## 4. 初始化 Redis
+
+```bash
+REDIS_ADDR=redis.gray-demo.svc.cluster.local:6379 bash k8s/redis-init.sh
+```
+
+该脚本会：
+
+```text
+gray:whitelist:pc:enabled = 1
+gray:whitelist:pc:tenantId 里加入 2
+```
+
+## 5. 测试
+
+使用包含以下 Payload 的 Demo JWT：
+
+```json
+{"tenantId":2,"id":283778812672}
+```
+
+```bash
+curl -k -i \
+  -H 'Host: gray-demo.example.com' \
+  -H 'Cookie: PC_AUTH_TOKEN=YOUR_DEMO_JWT' \
+  https://gray-demo.example.com/api/gray/status
+```
+
+预期 API 响应包含：
+
+```http
+x-gray-user: canary
+Set-Cookie: x-gray-user=always; Path=/; Secure; HttpOnly; SameSite=Lax
+x-frontend-gray-refresh: true
+```
+
+浏览器访问：
+
+```text
+https://gray-demo.example.com/
+```
+
+前端调用 `/api/gray/status` 后，检测到 `x-frontend-gray-refresh: true` 会刷新页面；刷新后的前端资源携带 `x-gray-user=always`，进入 `gray-demo-frontend-canary`。
+
+## 6. 关闭灰度
+
+```bash
+redis-cli SET gray:whitelist:pc:enabled 0
+```
+
+再次调用 `/api/gray/status`。插件会返回 stable，并在成功的 2xx 响应中清理 Cookie：
+
+```http
+x-gray-user: stable
+Set-Cookie: x-gray-user=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; HttpOnly; SameSite=Lax
+x-frontend-gray-refresh: true
+```
+
+前端收到刷新头后刷新页面，回到 stable 前端。
+
+## 注意事项
+
+- API `/api/**` 和前端 `/` 使用同一 Host，避免 Cookie 域名不一致。
+- API 路由和前端静态资源路由分开，避免登录/API 请求被转发到前端 Nginx。
+- 当前 0.6.5 只在 2xx 响应中写入或清理前端 Cookie；登录 302 不负责清理 Cookie。
+- Demo JWT 仅用于演示，当前插件只解码 Payload，不验证 JWT 签名。

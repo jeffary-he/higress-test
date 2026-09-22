@@ -3,10 +3,10 @@ info:
   category: custom
   name: gray-whitelist
   title: PC 灰度白名单
-  description: 根据配置的 Cookie 字段名称读取 JWT，从 JWT Payload 的 tenantId 或 id 判断灰度白名单，并在网关内部写入 x-gray-user 请求头。默认 Cookie 字段名称为 PC_AUTH_TOKEN。
+  description: 根据配置的 Cookie 字段名称读取 JWT，从 JWT Payload 的 tenantId 或 id 判断灰度白名单，并在网关内部写入 x-gray-user 请求头；响应状态变化时写入 x-gray-user=always 前端灰度 Cookie 和 x-frontend-gray-refresh: true。默认 Cookie 字段名称为 PC_AUTH_TOKEN。
   x-description-i18n:
     en-US: Determine PC gray traffic by tenantId or id in PC_AUTH_TOKEN and add the x-gray-user request header inside the gateway.
-  version: 0.6.3
+  version: 0.6.5
   contact:
     name: Engineering Team
     email: engineering@example.com
@@ -97,6 +97,16 @@ spec:
           title: 返回灰度响应头
           description: 是否向客户端返回 x-gray-user 响应头。
           default: true
+        frontend_gray_cookie_name:
+          type: string
+          title: 前端灰度 Cookie 名称
+          description: 必须与 Higress canary-by-cookie 配置的 Cookie 名称一致。
+          example: x-gray-user
+        frontend_gray_cookie_domain:
+          type: string
+          title: 前端灰度 Cookie Domain
+          description: 可选的 Cookie Domain，用于跨子域共享。
+          example: .example.com
         connectivity_test_enabled:
           type: boolean
           title: Redis 连通性测试

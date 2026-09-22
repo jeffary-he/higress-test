@@ -1,0 +1,78 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gray-demo-frontend-stable
+  namespace: gray-demo
+spec:
+  ingressClassName: higress
+  rules:
+  - host: gray-demo.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: gray-demo-frontend-stable
+            port: { number: 80 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gray-demo-frontend-canary
+  namespace: gray-demo
+  annotations:
+    higress.io/canary: "true"
+    higress.io/canary-by-cookie: "x-gray-user"
+spec:
+  ingressClassName: higress
+  rules:
+  - host: gray-demo.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: gray-demo-frontend-canary
+            port: { number: 80 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gray-demo-api-stable
+  namespace: gray-demo
+spec:
+  ingressClassName: higress
+  rules:
+  - host: gray-demo.example.com
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: gray-demo-api-stable
+            port: { number: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gray-demo-api-canary
+  namespace: gray-demo
+  annotations:
+    higress.io/canary: "true"
+    higress.io/canary-by-header: "x-gray-user"
+    higress.io/canary-by-header-value: "canary"
+spec:
+  ingressClassName: higress
+  rules:
+  - host: gray-demo.example.com
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: gray-demo-api-canary
+            port: { number: 8080 }

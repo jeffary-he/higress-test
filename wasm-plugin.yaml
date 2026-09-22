@@ -5,7 +5,7 @@ metadata:
   namespace: higress-system
 spec:
   # Wasm 镜像地址。
-  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.3
+  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.6.5
   # 在认证阶段处理请求头，保证 x-gray-user 能参与后续路由匹配。
   phase: AUTHN
   # 同一执行阶段内的插件优先级，数字越小越优先。
@@ -50,6 +50,10 @@ spec:
     # ==================== 请求头行为配置 ====================
     # 灰度判断和请求头转换在网关内部完成，同时将结果返回给前端。
     response_header_enabled: true
+    # 前端灰度 Cookie 名称，需与 Higress canary-by-cookie 一致。
+    frontend_gray_cookie_name: x-gray-user
+    # 可选：跨子域共享时填写，例如 .example.com。
+    frontend_gray_cookie_domain: ""
     # ==================== Redis 连通性测试 ====================
     # 仅用于临时测试 Redis 写入连通性，正常运行必须关闭。
     connectivity_test_enabled: false

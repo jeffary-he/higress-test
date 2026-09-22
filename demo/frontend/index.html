@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Higress 前后端灰度 Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 40px; background: #f5f7fb; }
+    main { max-width: 760px; margin: auto; padding: 32px; background: white; border-radius: 12px; box-shadow: 0 4px 20px #0001; }
+    .version { font-size: 28px; font-weight: 700; color: #1677ff; }
+    pre { background: #101828; color: #d1e9ff; padding: 16px; border-radius: 8px; overflow: auto; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Higress 前后端灰度发布 Demo</h1>
+  <p>前端版本：<span class="version">__FRONTEND_VERSION__</span></p>
+  <p>后端 API 返回：</p>
+  <pre id="result">请求中...</pre>
+</main>
+<script>
+async function loadVersion() {
+  const response = await fetch('/api/gray/status', { credentials: 'include' });
+  if (response.headers.get('x-frontend-gray-refresh') === 'true') {
+    location.reload();
+    return;
+  }
+  document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
+}
+loadVersion().catch(error => {
+  document.getElementById('result').textContent = String(error);
+});
+</script>
+</body>
+</html>
