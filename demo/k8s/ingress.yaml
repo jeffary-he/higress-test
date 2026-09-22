@@ -6,7 +6,7 @@ metadata:
 spec:
   ingressClassName: higress
   rules:
-  - host: gray-demo.example.com
+  - host: canary.pontosense.net
     http:
       paths:
       - path: /
@@ -27,7 +27,7 @@ metadata:
 spec:
   ingressClassName: higress
   rules:
-  - host: gray-demo.example.com
+  - host: canary.pontosense.net
     http:
       paths:
       - path: /
@@ -45,7 +45,7 @@ metadata:
 spec:
   ingressClassName: higress
   rules:
-  - host: gray-demo.example.com
+  - host: canary.pontosense.net
     http:
       paths:
       - path: /api
@@ -67,7 +67,7 @@ metadata:
 spec:
   ingressClassName: higress
   rules:
-  - host: gray-demo.example.com
+  - host: canary.pontosense.net
     http:
       paths:
       - path: /api

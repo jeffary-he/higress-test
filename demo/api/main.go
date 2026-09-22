@@ -32,9 +32,18 @@ func main() {
 		writeJSON(w, r, version)
 	})
 
-	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Addr: ":8080", Handler: requestLogger(mux, version), ReadHeaderTimeout: 5 * time.Second}
 	log.Printf("gray demo api started: version=%s", version)
 	log.Fatal(server.ListenAndServe())
+}
+
+func requestLogger(next http.Handler, version string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		next.ServeHTTP(w, r)
+		log.Printf("request method=%s path=%s version=%s gray_stage=%q duration=%s host=%s",
+			r.Method, r.URL.Path, version, r.Header.Get("x-gray-user"), time.Since(started), r.Host)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, r *http.Request, version string) {
