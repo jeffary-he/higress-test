@@ -11,7 +11,6 @@ import (
 	hosttest "github.com/higress-group/wasm-go/pkg/test"
 	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/tidwall/resp"
-	"gray-whitelist-wasm/internal/whitelist"
 )
 
 type fakeRedis struct {
@@ -26,8 +25,12 @@ func (f *fakeRedis) SMembers(_ string, cb wrapper.RedisResponseCallback) error {
 	return nil
 }
 
-func (f *fakeRedis) Get(_ string, cb wrapper.RedisResponseCallback) error {
-	cb(resp.StringValue("1"))
+func (f *fakeRedis) Get(key string, cb wrapper.RedisResponseCallback) error {
+	if key == "mode" {
+		cb(resp.StringValue("whitelist"))
+	} else {
+		cb(resp.StringValue("1"))
+	}
 	return nil
 }
 
@@ -61,26 +64,30 @@ func TestRefreshCallbacks(t *testing.T) {
 		now := time.Now()
 		client := &fakeRedis{}
 		r := &runtimeState{
-			cfg:    settings{TenantKey: "tenant", UserKey: "user", Timeout: 1000, MaxEntries: 10},
+			cfg:    settings{ModeKey: "mode", TenantKey: "tenant", UserKey: "user", Timeout: 1000, MaxEntries: 10},
 			client: client, now: func() time.Time { return now },
-			tenantCache: whitelist.NewCache(time.Minute), userCache: whitelist.NewCache(time.Minute),
 		}
 		selector := "tenant:2"
 		snapshot := resp.ArrayValue([]resp.Value{resp.StringValue("2")})
 		r.refresh()
-		if len(client.callbacks) != 2 {
-			t.Fatal("tenant and user refreshes were not dispatched")
+		if len(client.callbacks) != 1 {
+			t.Fatal("tenant refresh should precede user refresh")
 		}
 		client.callbacks[0](snapshot)
+		if r.snapshot != nil {
+			t.Fatal("partial snapshot published")
+		}
 		client.callbacks[1](resp.ArrayValue([]resp.Value{}))
-		if !r.tenantCache.Contains(selector, now) {
+		if _, ok := r.snapshot.tenants[selector]; !ok {
 			t.Fatal("snapshot not loaded")
 		}
 		now = now.Add(10 * time.Second)
 		r.refresh()
 		client.callbacks[2](resp.ErrorValue(errors.New("offline")))
-		client.callbacks[3](resp.ArrayValue([]resp.Value{}))
-		if !r.tenantCache.Contains(selector, now) {
+		if len(client.callbacks) != 3 {
+			t.Fatal("failed refresh should stop reading")
+		}
+		if _, ok := r.snapshot.tenants[selector]; !ok {
 			t.Fatal("failure discarded cache")
 		}
 	})
@@ -205,13 +212,9 @@ func TestGatewayHeaderHook(t *testing.T) {
 		}
 		r := cfg.(*Config).runtime
 		now := time.Now()
-		r.grayEnabled = true
-		r.enabledLoaded = true
-		r.enabledAt = now
 		selector := "tenant:2"
 		token := testJWT(`{"tenantId":2,"id":283778812672}`)
-		id, _ := r.tenantCache.Begin(now, time.Second)
-		r.tenantCache.Finish(id, now, now, map[string]struct{}{selector: {}}, true)
+		r.snapshot = &graySnapshot{enabled: true, mode: "whitelist", loadedAt: now, tenants: map[string]struct{}{selector: {}}}
 		action := host.CallOnHttpRequestHeaders([][2]string{
 			{":method", "GET"}, {":path", "/"}, {":authority", "example.com"},
 			{"cookie", "_ga=1; PC_AUTH_TOKEN=" + token},
@@ -236,6 +239,69 @@ func TestGatewayHeaderHook(t *testing.T) {
 			t.Fatal("request queried Redis")
 		}
 	})
+}
+
+func TestCookieExcludedPath(t *testing.T) {
+	const path = "/api/internal/v1/pc/login/actions/exchangeToken"
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{path, true}, {path + "?code=123", true}, {path + "/extra", false}, {"/api/other", false},
+	} {
+		if got := frontendCookieExcluded([][2]string{{":path", tc.path}}, []string{path}); got != tc.want {
+			t.Fatalf("path %s: got %t", tc.path, got)
+		}
+	}
+}
+
+func TestExcludedCookieHooks(t *testing.T) {
+	for _, canary := range []bool{false, true} {
+		hosttest.RunGoTest(t, func(t *testing.T) {
+			host, status := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"redis","frontend_gray_cookie_name":"x-gray-frontend","frontend_gray_cookie_excluded_paths":["/api/internal/v1/pc/login/actions/exchangeToken"]}`))
+			defer host.Reset()
+			if status != types.OnPluginStartStatusOK {
+				t.Fatal("configuration failed")
+			}
+			cfg, err := host.GetMatchConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := cfg.(*Config).runtime
+			r.snapshot = &graySnapshot{enabled: true, mode: "whitelist", loadedAt: time.Now(), tenants: map[string]struct{}{"tenant:2": {}}}
+			cookie, stage := "x-gray-frontend=always", "stable"
+			if canary {
+				cookie = "PC_AUTH_TOKEN=" + testJWT(`{"tenantId":2}`)
+				stage = "canary"
+			}
+			host.CallOnHttpRequestHeaders([][2]string{{":method", "POST"}, {":path", "/api/internal/v1/pc/login/actions/exchangeToken?code=123"}, {":authority", "example.com"}, {"cookie", cookie}})
+			found := false
+			for _, h := range host.GetRequestHeaders() {
+				if h[0] == "x-gray-user" {
+					found = h[1] == stage
+				}
+			}
+			if !found {
+				t.Fatal("routing changed")
+			}
+			host.CallOnHttpResponseHeaders([][2]string{{":status", "200"}, {"set-cookie", "PC_AUTH_TOKEN=new; HttpOnly"}})
+			cookies := 0
+			for _, h := range host.GetResponseHeaders() {
+				if h[0] == "x-frontend-gray-refresh" {
+					t.Fatal("unexpected refresh")
+				}
+				if h[0] == "set-cookie" || h[0] == "Set-Cookie" {
+					cookies++
+					if h[1] != "PC_AUTH_TOKEN=new; HttpOnly" {
+						t.Fatal("unexpected cookie mutation")
+					}
+				}
+			}
+			if cookies != 1 {
+				t.Fatal("login cookie lost")
+			}
+		})
+	}
 }
 
 func TestRequestHeaderTakesPrecedence(t *testing.T) {

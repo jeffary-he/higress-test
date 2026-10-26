@@ -3,10 +3,10 @@ info:
   category: custom
   name: gray-whitelist
   title: PC 灰度白名单
-  description: 根据配置的 Cookie 字段名称读取 JWT，从 JWT Payload 的 tenantId 或 id 判断灰度白名单，并在网关内部写入 x-gray-user 请求头；响应状态变化时写入 x-gray-user=always 前端灰度 Cookie 和 x-frontend-gray-refresh: true。默认 Cookie 字段名称为 PC_AUTH_TOKEN。
+  description: "支持白名单和流量两种互斥模式：白名单模式解析 JWT 的 tenantId/id，流量模式对完整 Token 做 SHA-256 分组。写入 x-gray-user 请求头，沿用前端灰度 Cookie 和刷新响应头。"
   x-description-i18n:
     en-US: Determine PC gray traffic by tenantId or id in PC_AUTH_TOKEN and add the x-gray-user request header inside the gateway.
-  version: 0.6.5
+  version: 0.7.0
   contact:
     name: Engineering Team
     email: engineering@example.com
@@ -39,6 +39,16 @@ spec:
           title: 租户白名单 Key
           description: Redis Set Key，成员为纯租户 ID。
           example: gray:whitelist:pc:tenantId
+        gray_mode_key:
+          type: string
+          title: 灰度模式 Key
+          description: Redis String，whitelist 或 traffic；Key 不存在时使用 whitelist。
+          default: gray:whitelist:pc:mode
+        gray_percent_key:
+          type: string
+          title: 流量比例 Key
+          description: Redis String，0 到 100 的整数，仅 traffic 模式读取。
+          default: gray:whitelist:pc:percent
         redis_user_key:
           type: string
           title: 用户 ID 白名单 Key
@@ -107,6 +117,12 @@ spec:
           title: 前端灰度 Cookie Domain
           description: 可选的 Cookie Domain，用于跨子域共享。
           example: .example.com
+        frontend_gray_cookie_excluded_paths:
+          type: array
+          title: 前端灰度 Cookie 排除路径
+          description: 精确匹配请求阶段路径（忽略查询参数），不写入或删除灰度 Cookie、不生成刷新通知；后端分流和上游登录 Cookie 不受影响。默认空列表。
+          items:
+            type: string
         connectivity_test_enabled:
           type: boolean
           title: Redis 连通性测试

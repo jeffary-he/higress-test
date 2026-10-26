@@ -17,37 +17,38 @@ import (
 )
 
 type settings struct {
-	Cluster                 string `json:"redis_cluster"`
-	Database                int    `json:"redis_database"`
-	TenantKey               string `json:"redis_tenant_key"`
-	UserKey                 string `json:"redis_user_key"`
-	EnabledKey              string `json:"gray_enabled_key"`
-	Username                string `json:"redis_username"`
-	Password                string `json:"redis_password"`
-	Timeout                 int64  `json:"redis_timeout_ms"`
-	Refresh                 int64  `json:"refresh_interval_ms"`
-	TTL                     int64  `json:"cache_ttl_ms"`
-	MaxEntries              int    `json:"max_entries"`
-	TokenCookieName         string `json:"token_cookie_name"`
-	TenantIDClaim           string `json:"tenant_id_claim"`
-	UserIDClaim             string `json:"user_id_claim"`
-	ConnectivityTestEnabled bool   `json:"connectivity_test_enabled"`
-	ConnectivityTestKey     string `json:"connectivity_test_key"`
-	ConnectivityTestPeriod  int64  `json:"connectivity_test_interval_ms"`
-	ResponseHeaderEnabled   bool   `json:"response_header_enabled"`
-	FrontendCookieName      string `json:"frontend_gray_cookie_name"`
-	FrontendCookieDomain    string `json:"frontend_gray_cookie_domain"`
+	Cluster                     string   `json:"redis_cluster"`
+	Database                    int      `json:"redis_database"`
+	TenantKey                   string   `json:"redis_tenant_key"`
+	UserKey                     string   `json:"redis_user_key"`
+	EnabledKey                  string   `json:"gray_enabled_key"`
+	ModeKey                     string   `json:"gray_mode_key"`
+	PercentKey                  string   `json:"gray_percent_key"`
+	Username                    string   `json:"redis_username"`
+	Password                    string   `json:"redis_password"`
+	Timeout                     int64    `json:"redis_timeout_ms"`
+	Refresh                     int64    `json:"refresh_interval_ms"`
+	TTL                         int64    `json:"cache_ttl_ms"`
+	MaxEntries                  int      `json:"max_entries"`
+	TokenCookieName             string   `json:"token_cookie_name"`
+	TenantIDClaim               string   `json:"tenant_id_claim"`
+	UserIDClaim                 string   `json:"user_id_claim"`
+	ConnectivityTestEnabled     bool     `json:"connectivity_test_enabled"`
+	ConnectivityTestKey         string   `json:"connectivity_test_key"`
+	ConnectivityTestPeriod      int64    `json:"connectivity_test_interval_ms"`
+	ResponseHeaderEnabled       bool     `json:"response_header_enabled"`
+	FrontendCookieName          string   `json:"frontend_gray_cookie_name"`
+	FrontendCookieDomain        string   `json:"frontend_gray_cookie_domain"`
+	FrontendCookieExcludedPaths []string `json:"frontend_gray_cookie_excluded_paths"`
 }
 
 type Config struct{ runtime *runtimeState }
 type runtimeState struct {
 	cfg               settings
-	tenantCache       *whitelist.Cache
-	userCache         *whitelist.Cache
-	grayEnabled       bool
-	enabledAt         time.Time
-	enabledLoaded     bool
-	enabledRefreshing bool
+	snapshot          *graySnapshot
+	refreshing        bool
+	refreshGeneration uint64
+	refreshDeadline   time.Time
 	client            wrapper.RedisClient
 	now               func() time.Time
 }
@@ -62,6 +63,7 @@ func init() {
 func decodeSettings(raw string) (settings, error) {
 	cfg := settings{
 		Database: 0, TenantKey: "gray:whitelist:pc:tenantId", UserKey: "gray:whitelist:pc:userId", EnabledKey: "gray:whitelist:pc:enabled", Timeout: 1000,
+		ModeKey: "gray:whitelist:pc:mode", PercentKey: "gray:whitelist:pc:percent",
 		Refresh: 10000, TTL: 60000, MaxEntries: 10000,
 		TokenCookieName: "PC_AUTH_TOKEN", TenantIDClaim: "tenantId", UserIDClaim: "id",
 		ConnectivityTestKey: "gray:whitelist:pc:connectivity-test", ConnectivityTestPeriod: 60000,
@@ -71,8 +73,8 @@ func decodeSettings(raw string) (settings, error) {
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return cfg, errors.New("invalid configuration types")
 	}
-	if cfg.Cluster == "" || cfg.TenantKey == "" || cfg.UserKey == "" || cfg.EnabledKey == "" {
-		return cfg, errors.New("redis_cluster, gray_enabled_key, redis_tenant_key and redis_user_key must not be empty")
+	if cfg.Cluster == "" || cfg.TenantKey == "" || cfg.UserKey == "" || cfg.EnabledKey == "" || cfg.ModeKey == "" || cfg.PercentKey == "" {
+		return cfg, errors.New("redis_cluster and all Redis configuration keys must not be empty")
 	}
 	if cfg.Database < 0 || cfg.Database > 15 {
 		return cfg, errors.New("redis_database must be between 0 and 15")
@@ -118,8 +120,6 @@ func parseConfig(js gjson.Result, config *Config) error {
 	}
 	r := &runtimeState{
 		cfg: cfg, client: client, now: time.Now,
-		tenantCache: whitelist.NewCache(time.Duration(cfg.TTL) * time.Millisecond),
-		userCache:   whitelist.NewCache(time.Duration(cfg.TTL) * time.Millisecond),
 	}
 	config.runtime = r
 	// A separate cache per parsed rule prevents cross-rule/config-reload contamination.
@@ -143,61 +143,6 @@ func (r *runtimeState) writeConnectivityProbe() {
 	})
 	if err != nil {
 		proxywasm.LogWarn("gray-whitelist: Redis connectivity write test dispatch failed")
-	}
-}
-
-func (r *runtimeState) refresh() {
-	r.refreshEnabled()
-	r.refreshKey(r.cfg.TenantKey, r.tenantCache, "tenant", func(raw string) (string, bool) { return whitelist.TenantSelector(raw) })
-	r.refreshKey(r.cfg.UserKey, r.userCache, "user", func(raw string) (string, bool) { return whitelist.UserSelector(raw) })
-}
-
-func (r *runtimeState) refreshEnabled() {
-	if r.enabledRefreshing {
-		return
-	}
-	r.enabledRefreshing = true
-	err := r.client.Get(r.cfg.EnabledKey, func(v resp.Value) {
-		r.enabledRefreshing = false
-		if v.Error() != nil || v.Type() != resp.BulkString || v.IsNull() || (v.String() != "0" && v.String() != "1") {
-			proxywasm.LogWarn("gray-whitelist: invalid gray enabled switch; retaining previous value")
-			return
-		}
-		r.grayEnabled = v.String() == "1"
-		r.enabledAt = r.now()
-		r.enabledLoaded = true
-		proxywasm.LogInfof("gray-whitelist: enabled switch refreshed; enabled=%t", r.grayEnabled)
-	})
-	if err != nil {
-		r.enabledRefreshing = false
-		proxywasm.LogWarn("gray-whitelist: gray enabled switch dispatch failed")
-	}
-}
-
-func (r *runtimeState) isGrayEnabled(now time.Time) bool {
-	return r.enabledLoaded && r.grayEnabled && now.Sub(r.enabledAt) < time.Duration(r.cfg.TTL)*time.Millisecond
-}
-
-func (r *runtimeState) refreshKey(key string, cache *whitelist.Cache, kind string, selector func(string) (string, bool)) {
-	started := r.now()
-	id, ok := cache.Begin(started, time.Duration(r.cfg.Timeout)*time.Millisecond)
-	if !ok {
-		return
-	}
-	err := r.client.SMembers(key, func(v resp.Value) {
-		next, err := parseTypedSnapshot(v, r.cfg.MaxEntries, selector)
-		if err != nil {
-			cache.Finish(id, started, r.now(), nil, false)
-			proxywasm.LogWarnf("gray-whitelist: %s refresh rejected; retaining previous snapshot until TTL", kind)
-			return
-		}
-		if cache.Finish(id, started, r.now(), next, true) {
-			proxywasm.LogInfof("gray-whitelist: %s refresh succeeded; entries=%d", kind, len(next))
-		}
-	})
-	if err != nil {
-		cache.Finish(id, started, r.now(), nil, false)
-		proxywasm.LogWarnf("gray-whitelist: %s Redis dispatch failed; retrying on next refresh", kind)
 	}
 }
 
@@ -241,24 +186,10 @@ func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 	if err != nil {
 		return headerFailure()
 	}
-	cookieName, tenantClaim, userClaim := "PC_AUTH_TOKEN", "tenantId", "id"
+	stage := "stable"
 	if cfg.runtime != nil {
-		cookieName = cfg.runtime.cfg.TokenCookieName
-		tenantClaim = cfg.runtime.cfg.TenantIDClaim
-		userClaim = cfg.runtime.cfg.UserIDClaim
+		stage = cfg.runtime.stage(headers)
 	}
-	if cfg.runtime == nil || !cfg.runtime.isGrayEnabled(cfg.runtime.now()) {
-		stage := "stable"
-		if err := proxywasm.ReplaceHttpRequestHeaders(rewriteHeadersWithStage(headers, stage)); err != nil {
-			return headerFailure()
-		}
-		ctx.SetContext("gray-stage", stage)
-		trackFrontendCookie(ctx, headers, cfg.runtime, stage)
-		return types.ActionContinue
-	}
-	stage := resolveStage(headers, cookieName, tenantClaim, userClaim, func(identity string) bool {
-		return cfg.runtime != nil && (cfg.runtime.tenantCache.Contains(identity, cfg.runtime.now()) || cfg.runtime.userCache.Contains(identity, cfg.runtime.now()))
-	})
 	output := rewriteHeadersWithStage(headers, stage)
 	// Remove all client gray routing headers. Keep the original Cookie untouched.
 	if err := proxywasm.ReplaceHttpRequestHeaders(output); err != nil {
@@ -314,6 +245,10 @@ func trackFrontendCookie(ctx wrapper.HttpContext, headers [][2]string, runtime *
 	if runtime == nil {
 		return
 	}
+	if frontendCookieExcluded(headers, runtime.cfg.FrontendCookieExcludedPaths) {
+		ctx.SetContext("frontend-gray-refresh", "false")
+		return
+	}
 	value, count := findCookie(headers, runtime.cfg.FrontendCookieName)
 	if count == 1 && value == "always" {
 		ctx.SetContext("frontend-gray-cookie", "always")
@@ -327,6 +262,23 @@ func trackFrontendCookie(ctx wrapper.HttpContext, headers [][2]string, runtime *
 	} else {
 		ctx.SetContext("frontend-gray-refresh", "false")
 	}
+}
+
+// Match the request path visible at the request-header hook, before later rewrites.
+// Never strip upstream Set-Cookie headers: login cookies must pass through.
+func frontendCookieExcluded(headers [][2]string, excluded []string) bool {
+	for _, h := range headers {
+		if h[0] == ":path" {
+			path, _, _ := strings.Cut(h[1], "?")
+			for _, candidate := range excluded {
+				if path == candidate {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
 }
 
 func buildFrontendGrayCookie(cfg settings, stage string) string {
