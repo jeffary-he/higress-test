@@ -53,9 +53,9 @@ Demo 的 API 路由必须绑定 `gray-whitelist` 插件。插件只绑定 `/api`
 
 ```yaml
 gray_enabled_key: gray:whitelist:pc:enabled
-redis_tenant_key: gray:whitelist:pc:tenantId
-redis_user_key: gray:whitelist:pc:userId
-token_cookie_name: PC_AUTH_TOKEN
+gray_tenant_key: gray:whitelist:pc:tenantId
+gray_user_key: gray:whitelist:pc:userId
+jwt_token_cookie_name: PC_AUTH_TOKEN
 frontend_gray_cookie_name: x-gray-user
 frontend_gray_cookie_domain: ""
 ```

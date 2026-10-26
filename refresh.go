@@ -26,7 +26,7 @@ type graySnapshot struct {
 func (r *runtimeState) stage(headers [][2]string) string {
 	s := r.snapshot
 	now := r.now()
-	if s == nil || !s.enabled || now.Before(s.loadedAt) || now.Sub(s.loadedAt) >= time.Duration(r.cfg.TTL)*time.Millisecond {
+	if s == nil || !s.enabled || now.Before(s.loadedAt) || now.Sub(s.loadedAt) >= time.Duration(r.cfg.TTL)*time.Second {
 		return "stable"
 	}
 	if s.mode == "traffic" {

@@ -34,7 +34,7 @@ spec:
           title: 灰度开关 Key
           description: Redis String Key，值为 1 开启灰度，0 关闭灰度。
           example: gray:whitelist:pc:enabled
-        redis_tenant_key:
+        gray_tenant_key:
           type: string
           title: 租户白名单 Key
           description: Redis Set Key，成员为纯租户 ID。
@@ -49,7 +49,7 @@ spec:
           title: 流量比例 Key
           description: Redis String，0 到 100 的整数，仅 traffic 模式读取。
           default: gray:whitelist:pc:percent
-        redis_user_key:
+        gray_user_key:
           type: string
           title: 用户 ID 白名单 Key
           description: Redis Set Key，成员为纯用户 ID。
@@ -69,40 +69,42 @@ spec:
           minimum: 100
           maximum: 60000
           example: 1000
-        refresh_interval_ms:
+        gateway_refresh_interval_seconds:
           type: integer
           title: 刷新间隔
-          description: 从 Redis 同步灰度开关和白名单的间隔，单位毫秒。
-          minimum: 1000
-          example: 10000
-        cache_ttl_ms:
+          description: 从 Redis 同步灰度开关和白名单的间隔，单位秒。
+          minimum: 1
+          maximum: 3600
+          example: 10
+        gateway_cache_ttl_seconds:
           type: integer
           title: 本地缓存 TTL
-          description: 本地缓存最长有效时间，单位毫秒；超过后默认走 stable。
-          minimum: 1000
-          example: 60000
-        max_entries:
+          description: 本地缓存最长有效时间，单位秒；超过后默认走 stable。
+          minimum: 1
+          maximum: 86400
+          example: 60
+        gray_max_entries:
           type: integer
           title: 最大白名单数量
           description: 单个白名单 Set 允许的最大成员数量。
           minimum: 1
           example: 10000
-        token_cookie_name:
+        jwt_token_cookie_name:
           type: string
           title: JWT Cookie 名称
           description: 保存 JWT 的 Cookie 字段名。
           example: PC_AUTH_TOKEN
-        tenant_id_claim:
+        jwt_tenant_id_claim:
           type: string
           title: 租户 Claim
           description: JWT Payload 中的租户 ID 字段名。
           example: tenantId
-        user_id_claim:
+        jwt_user_id_claim:
           type: string
           title: 用户 Claim
           description: JWT Payload 中的用户 ID 字段名。
           example: id
-        response_header_enabled:
+        frontend_response_header_enabled:
           type: boolean
           title: 返回灰度响应头
           description: 是否向客户端返回 x-gray-user 响应头。
@@ -123,19 +125,20 @@ spec:
           description: 精确匹配请求阶段路径（忽略查询参数），不写入或删除灰度 Cookie、不生成刷新通知；后端分流和上游登录 Cookie 不受影响。默认空列表。
           items:
             type: string
-        connectivity_test_enabled:
+        redis_connectivity_test_enabled:
           type: boolean
           title: Redis 连通性测试
           description: 是否定时对测试 Key 执行 INCR，仅用于临时诊断。
           default: false
-        connectivity_test_key:
+        redis_connectivity_test_key:
           type: string
           title: 连通性测试 Key
           description: Redis 连通性测试使用的 INCR Key。
           example: gray:whitelist:pc:connectivity-test
-        connectivity_test_interval_ms:
+        redis_connectivity_test_interval_seconds:
           type: integer
           title: 连通性测试间隔
-          description: 连通性测试执行间隔，单位毫秒。
-          minimum: 1000
-          example: 60000
+          description: 连通性测试执行间隔，单位秒。
+          minimum: 1
+          maximum: 3600
+          example: 60

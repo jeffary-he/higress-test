@@ -31,29 +31,29 @@ spec:
     # 流量比例 String：0～100 整数，仅 traffic 模式读取。
     gray_percent_key: gray:whitelist:pc:percent
     # 租户白名单 Set，成员为纯租户 ID，例如 2。
-    redis_tenant_key: gray:whitelist:pc:tenantId
+    gray_tenant_key: gray:whitelist:pc:tenantId
     # 用户白名单 Set，成员为纯用户 ID，例如 283778812672。
-    redis_user_key: gray:whitelist:pc:userId
+    gray_user_key: gray:whitelist:pc:userId
 
     # ==================== JWT 配置 ====================
     # Cookie 中保存 JWT 的字段名。
-    token_cookie_name: PC_AUTH_TOKEN
+    jwt_token_cookie_name: PC_AUTH_TOKEN
     # JWT Payload 中的租户 ID 字段名。
-    tenant_id_claim: tenantId
+    jwt_tenant_id_claim: tenantId
     # JWT Payload 中的用户 ID 字段名。
-    user_id_claim: id
+    jwt_user_id_claim: id
 
     # ==================== 本地缓存配置 ====================
-    # 从 Redis 同步开关和白名单的间隔，单位毫秒。
-    refresh_interval_ms: 10000
-    # 本地缓存最长有效时间，单位毫秒；超过后默认 stable。
-    cache_ttl_ms: 60000
+    # 从 Redis 同步开关和白名单的间隔，单位秒。
+    gateway_refresh_interval_seconds: 10
+    # 本地缓存最长有效时间，单位秒；超过后默认 stable。
+    gateway_cache_ttl_seconds: 60
     # 单个白名单 Set 允许的最大成员数量。
-    max_entries: 10000
+    gray_max_entries: 10000
 
     # ==================== 请求头行为配置 ====================
     # 灰度判断和请求头转换在网关内部完成，同时将结果返回给前端。
-    response_header_enabled: true
+    frontend_response_header_enabled: true
     # 前端灰度 Cookie 名称，需与 Higress canary-by-cookie 一致。
     frontend_gray_cookie_name: x-gray-user
     # 可选：跨子域共享时填写，例如 .example.com。
@@ -63,8 +63,8 @@ spec:
       - /api/internal/v1/pc/login/actions/exchangeToken
     # ==================== Redis 连通性测试 ====================
     # 仅用于临时测试 Redis 写入连通性，正常运行必须关闭。
-    connectivity_test_enabled: false
+    redis_connectivity_test_enabled: false
     # 连通性测试执行 INCR 的 Redis Key。
-    connectivity_test_key: gray:whitelist:pc:connectivity-test
-    # 连通性测试间隔，单位毫秒。
-    connectivity_test_interval_ms: 60000
+    redis_connectivity_test_key: gray:whitelist:pc:connectivity-test
+    # 连通性测试间隔，单位秒。
+    redis_connectivity_test_interval_seconds: 60

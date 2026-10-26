@@ -12,11 +12,11 @@
 
 模式 Key 不存在时默认 `whitelist`，兼容 0.6.5 数据；空字符串、未知模式、缺失或非法比例会拒绝本轮更新。
 只有该模式需要的数据全部成功读取并校验后，才一次性替换本地快照。模式切换准备期间继续使用旧快照；
-失败不续期，超过 `cache_ttl_ms` 后走 stable。首次加载失败也走 stable。超时旧回调不能覆盖新一轮配置。
+失败不续期，超过 `gateway_cache_ttl_seconds` 后走 stable。首次加载失败也走 stable。超时旧回调不能覆盖新一轮配置。
 正常同步延迟约为等待下次刷新加该分支的 Redis 读取时间；多个工作实例和 Pod 独立同步，不保证同一时刻切换。
 本地原子替换不等于 Redis 多次读取的事务快照；管理端写入规则和并发修改边界见 JAVA-CONTRACT.md。
 
-流量模式不解析 JWT，直接读取 `token_cookie_name` 指定的完整 Token：
+流量模式不解析 JWT，直接读取 `jwt_token_cookie_name` 指定的完整 Token：
 
 ```text
 SHA-256(完整 Token UTF-8 字节)
@@ -158,6 +158,7 @@ redis_password: "REPLACE_WITH_REDIS_PASSWORD"
 redis_timeout_ms: 1000
 
 # ==================== Redis Key 配置 ====================
+# 仅支持新参数名，旧参数名将导致配置校验失败。
 # 灰度总开关：1 开启，0 关闭。
 gray_enabled_key: "gray:whitelist:pc:enabled"
 # 模式 String：whitelist / traffic；Key 不存在时默认 whitelist。
@@ -165,29 +166,29 @@ gray_mode_key: "gray:whitelist:pc:mode"
 # 比例 String：0～100 整数，仅 traffic 模式读取。
 gray_percent_key: "gray:whitelist:pc:percent"
 # 租户白名单 Set，成员为纯租户 ID，例如 2。
-redis_tenant_key: "gray:whitelist:pc:tenantId"
+gray_tenant_key: "gray:whitelist:pc:tenantId"
 # 用户白名单 Set，成员为纯用户 ID，例如 283778812672。
-redis_user_key: "gray:whitelist:pc:userId"
+gray_user_key: "gray:whitelist:pc:userId"
 
 # ==================== JWT 配置 ====================
 # Cookie 中保存 JWT 的字段名。
-token_cookie_name: "PC_AUTH_TOKEN"
+jwt_token_cookie_name: "PC_AUTH_TOKEN"
 # JWT Payload 中的租户 ID 字段名。
-tenant_id_claim: "tenantId"
+jwt_tenant_id_claim: "tenantId"
 # JWT Payload 中的用户 ID 字段名。
-user_id_claim: "id"
+jwt_user_id_claim: "id"
 
 # ==================== 本地缓存配置 ====================
-# 从 Redis 同步开关和白名单的间隔，单位毫秒。
-refresh_interval_ms: 10000
-# 本地缓存最长有效时间，单位毫秒；超过后默认 stable。
-cache_ttl_ms: 60000
+# 从 Redis 同步开关和白名单的间隔，单位秒。
+gateway_refresh_interval_seconds: 10
+# 本地缓存最长有效时间，单位秒；超过后默认 stable。
+gateway_cache_ttl_seconds: 60
 # 单个白名单 Set 允许的最大成员数量。
-max_entries: 10000
+gray_max_entries: 10000
 
 # ==================== 请求头行为配置 ====================
 # true 表示向客户端返回 x-gray-user 响应头，供前端读取。
-response_header_enabled: true
+frontend_response_header_enabled: true
 # 前端灰度 Cookie 名称，需与 Higress canary-by-cookie 一致。
 frontend_gray_cookie_name: "x-gray-user"
 # 可选：跨子域共享时填写，例如 .example.com。
@@ -204,11 +205,11 @@ frontend_gray_cookie_excluded_paths:
 
 # ==================== Redis 连通性测试 ====================
 # 仅用于临时测试 Redis 写入连通性，正常运行必须关闭。
-connectivity_test_enabled: false
+redis_connectivity_test_enabled: false
 # 连通性测试执行 INCR 的 Redis Key。
-connectivity_test_key: "gray:whitelist:pc:connectivity-test"
-# 连通性测试间隔，单位毫秒。
-connectivity_test_interval_ms: 60000
+redis_connectivity_test_key: "gray:whitelist:pc:connectivity-test"
+# 连通性测试间隔，单位秒。
+redis_connectivity_test_interval_seconds: 60
 ```
 
 租户 Set 成员是纯租户 ID，用户 Set 成员是纯用户 ID。两类名单是 OR 关系：
@@ -250,9 +251,9 @@ GET gray:whitelist:pc:enabled
 
 插件默认每 10 秒按“开关 → 模式 → 对应数据”刷新，完整校验后一次性更新每个 Wasm 实例的本地快照。请求不访问 Redis。
 刷新失败保留整套旧缓存但不续期，自最后一次完整成功起 60 秒后走 stable；白名单分支完整成功时，空 Set 会清空对应名单。
-非法成员或超过 max_entries 会拒绝整个新快照。
+非法成员或超过 gray_max_entries 会拒绝整个新快照。
 
-临时设置 `connectivity_test_enabled: true` 后，每个 Wasm 实例按周期对独立测试 Key 执行 INCR 并记录 count；它不修改用户名单。多 Pod/工作实例会分别递增。验证完成后关闭开关并删除测试 Key。
+临时设置 `redis_connectivity_test_enabled: true` 后，每个 Wasm 实例按周期对独立测试 Key 执行 INCR 并记录 count；它不修改用户名单。多 Pod/工作实例会分别递增。验证完成后关闭开关并删除测试 Key。
 
 ## 构建发布
 

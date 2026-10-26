@@ -95,24 +95,118 @@ func TestRefreshCallbacks(t *testing.T) {
 
 func TestSettingsValidation(t *testing.T) {
 	cfg, err := decodeSettings(`{"redis_cluster":"outbound|6379||aws-redis.dns","redis_database":15}`)
-	if err != nil || cfg.Database != 15 || cfg.TTL != 60000 || cfg.Refresh != 10000 || cfg.EnabledKey != "gray:whitelist:pc:enabled" ||
+	if err != nil || cfg.Database != 15 || cfg.TTL != 60 || cfg.Refresh != 10 || cfg.EnabledKey != "gray:whitelist:pc:enabled" ||
 		cfg.TokenCookieName != "PC_AUTH_TOKEN" || cfg.TenantIDClaim != "tenantId" || cfg.UserIDClaim != "id" ||
-		cfg.ConnectivityTestEnabled || cfg.ConnectivityTestPeriod != 60000 || !cfg.ResponseHeaderEnabled {
+		cfg.ConnectivityTestEnabled || cfg.ConnectivityTestPeriod != 60 || !cfg.ResponseHeaderEnabled {
 		t.Fatal("default config invalid")
 	}
 	for _, bad := range []string{
 		`{}`, `{"redis_cluster":"x","redis_timeout_ms":-1}`,
 		`{"redis_cluster":"x","redis_database":16}`, `{"redis_cluster":"x","redis_database":1.5}`,
-		`{"redis_cluster":"x","cache_ttl_ms":1000}`, `{"redis_cluster":"x","refresh_interval_ms":1001}`,
-		`{"redis_cluster":"x","max_entries":0}`,
-		`{"redis_cluster":"x","token_cookie_name":"bad name"}`,
-		`{"redis_cluster":"x","tenant_id_claim":"bad.name"}`,
-		`{"redis_cluster":"x","tenant_id_claim":"id","user_id_claim":"id"}`,
-		`{"redis_cluster":"x","connectivity_test_enabled":true,"connectivity_test_key":""}`,
-		`{"redis_cluster":"x","connectivity_test_enabled":true,"connectivity_test_interval_ms":1001}`,
+		`{"redis_cluster":"x","gateway_cache_ttl_seconds":1}`, `{"redis_cluster":"x","gateway_refresh_interval_seconds":0}`,
+		`{"redis_cluster":"x","gray_max_entries":0}`,
+		`{"redis_cluster":"x","jwt_token_cookie_name":"bad name"}`,
+		`{"redis_cluster":"x","jwt_tenant_id_claim":"bad.name"}`,
+		`{"redis_cluster":"x","jwt_tenant_id_claim":"id","jwt_user_id_claim":"id"}`,
+		`{"redis_cluster":"x","redis_connectivity_test_enabled":true,"redis_connectivity_test_key":""}`,
+		`{"redis_cluster":"x","redis_connectivity_test_enabled":true,"redis_connectivity_test_interval_seconds":0}`,
 	} {
 		if _, err := decodeSettings(bad); err == nil {
 			t.Errorf("accepted invalid config: %s", bad)
+		}
+	}
+}
+
+func TestRenamedParameters(t *testing.T) {
+	cfg, err := decodeSettings(`{"redis_cluster":"x","gray_tenant_key":"tenants","gray_user_key":"users","gateway_cache_ttl_seconds":600,"redis_connectivity_test_enabled":true,"redis_connectivity_test_key":"probe","redis_connectivity_test_interval_seconds":120}`)
+	if err != nil || cfg.TenantKey != "tenants" || cfg.UserKey != "users" || cfg.TTL != 600 || !cfg.ConnectivityTestEnabled || cfg.ConnectivityTestKey != "probe" || cfg.ConnectivityTestPeriod != 120 {
+		t.Fatalf("new parameters failed: %+v %v", cfg, err)
+	}
+	for _, old := range []string{"redis_tenant_key", "redis_user_key", "cache_ttl_ms", "connectivity_test_enabled", "connectivity_test_key", "connectivity_test_interval_ms"} {
+		for _, value := range []any{"old", nil} {
+			fields := map[string]any{"redis_cluster": "x", "gray_tenant_key": "new", old: value}
+			raw, _ := json.Marshal(fields)
+			if _, err := decodeSettings(string(raw)); err == nil {
+				t.Fatalf("accepted removed parameter %s", old)
+			}
+		}
+	}
+}
+
+func TestGroupedParameterNames(t *testing.T) {
+	cfg, err := decodeSettings(`{"redis_cluster":"x","gray_max_entries":123,"gateway_refresh_interval_seconds":20,"jwt_token_cookie_name":"AUTH","jwt_tenant_id_claim":"tenant","jwt_user_id_claim":"uid"}`)
+	if err != nil || cfg.MaxEntries != 123 || cfg.Refresh != 20 || cfg.TokenCookieName != "AUTH" || cfg.TenantIDClaim != "tenant" || cfg.UserIDClaim != "uid" {
+		t.Fatalf("new parameters failed: %+v %v", cfg, err)
+	}
+	for _, old := range []string{"max_entries", "refresh_interval_ms", "token_cookie_name", "tenant_id_claim", "user_id_claim"} {
+		fields := map[string]any{"redis_cluster": "x", old: nil}
+		raw, _ := json.Marshal(fields)
+		if _, err := decodeSettings(string(raw)); err == nil {
+			t.Fatalf("accepted removed parameter %s", old)
+		}
+	}
+}
+
+func TestCacheTTLSeconds(t *testing.T) {
+	for _, raw := range []string{
+		`{"redis_cluster":"x","gateway_refresh_interval_ms":10000}`,
+		`{"redis_cluster":"x","gateway_refresh_interval_seconds":1.5}`,
+		`{"redis_cluster":"x","gateway_refresh_interval_seconds":3601,"gateway_cache_ttl_seconds":86400}`,
+		`{"redis_cluster":"x","gateway_cache_ttl_ms":60000}`,
+		`{"redis_cluster":"x","gateway_cache_ttl_seconds":86401}`,
+		`{"redis_cluster":"x","gateway_cache_ttl_seconds":0}`,
+		`{"redis_cluster":"x","gateway_cache_ttl_seconds":10.5}`,
+		`{"redis_cluster":"x","gateway_cache_ttl_seconds":10,"gateway_refresh_interval_seconds":11}`,
+	} {
+		if _, err := decodeSettings(raw); err == nil {
+			t.Fatalf("accepted invalid TTL: %s", raw)
+		}
+	}
+	cfg, err := decodeSettings(`{"redis_cluster":"x","gateway_cache_ttl_seconds":60}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	now := start.Add(60*time.Second - time.Nanosecond)
+	r := runtimeState{cfg: cfg, now: func() time.Time { return now }, snapshot: &graySnapshot{enabled: true, mode: "traffic", percent: 100, loadedAt: start}}
+	headers := [][2]string{{"cookie", "PC_AUTH_TOKEN=abc"}}
+	if r.stage(headers) != "canary" {
+		t.Fatal("expired before 60 seconds")
+	}
+	now = start.Add(60 * time.Second)
+	if r.stage(headers) != "stable" {
+		t.Fatal("did not expire at 60 seconds")
+	}
+}
+
+func TestFrontendResponseHeaderSetting(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		raw, _ := json.Marshal(map[string]any{"redis_cluster": "x", "frontend_response_header_enabled": enabled})
+		cfg, err := decodeSettings(string(raw))
+		if err != nil || cfg.ResponseHeaderEnabled != enabled {
+			t.Fatalf("setting %t: %+v %v", enabled, cfg, err)
+		}
+	}
+	if _, err := decodeSettings(`{"redis_cluster":"x","response_header_enabled":false}`); err == nil {
+		t.Fatal("accepted removed response_header_enabled")
+	}
+}
+
+func TestConnectivityIntervalSeconds(t *testing.T) {
+	for _, raw := range []string{
+		`{"redis_cluster":"x","redis_connectivity_test_interval_ms":60000}`,
+		`{"redis_cluster":"x","redis_connectivity_test_enabled":true,"redis_connectivity_test_interval_seconds":3601}`,
+		`{"redis_cluster":"x","redis_connectivity_test_enabled":true,"redis_connectivity_test_interval_seconds":1.5}`,
+	} {
+		if _, err := decodeSettings(raw); err == nil {
+			t.Fatalf("accepted invalid interval: %s", raw)
+		}
+	}
+	for _, seconds := range []int{1, 60, 3600} {
+		raw, _ := json.Marshal(map[string]any{"redis_cluster": "x", "redis_connectivity_test_enabled": true, "redis_connectivity_test_interval_seconds": seconds})
+		cfg, err := decodeSettings(string(raw))
+		if err != nil || cfg.ConnectivityTestPeriod != int64(seconds) {
+			t.Fatalf("interval %d: %v", seconds, err)
 		}
 	}
 }

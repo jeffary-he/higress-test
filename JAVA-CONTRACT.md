@@ -88,7 +88,7 @@ SMEMBERS gray:whitelist:pc:userId
 ```
 
 管理接口明确区分租户白名单和用户白名单，在 Java 中验证 ID 后写入纯 ID，不添加 tenant: 或 user: 前缀。不要从前端接收任意 Redis Member 字符串。
-Java 必须限制成员数量不超过插件 max_entries；并发新增时使用 Lua 等原子方式检查容量并写入。
+Java 必须限制成员数量不超过插件 gray_max_entries；并发新增时使用 Lua 等原子方式检查容量并写入。
 批量替换应先写唯一临时 Set，校验后原子 RENAME；空列表直接 DEL 正式 Key，避免插件读到半成品。
 
 插件使用只读 Redis 身份；Java 管理端使用独立写入身份。临时连通性测试开启时，插件身份还需对测试 Key 具有 INCR 权限，测试后应关闭并恢复只读权限。

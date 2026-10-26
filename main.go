@@ -19,24 +19,24 @@ import (
 type settings struct {
 	Cluster                     string   `json:"redis_cluster"`
 	Database                    int      `json:"redis_database"`
-	TenantKey                   string   `json:"redis_tenant_key"`
-	UserKey                     string   `json:"redis_user_key"`
+	TenantKey                   string   `json:"gray_tenant_key"`
+	UserKey                     string   `json:"gray_user_key"`
 	EnabledKey                  string   `json:"gray_enabled_key"`
 	ModeKey                     string   `json:"gray_mode_key"`
 	PercentKey                  string   `json:"gray_percent_key"`
 	Username                    string   `json:"redis_username"`
 	Password                    string   `json:"redis_password"`
 	Timeout                     int64    `json:"redis_timeout_ms"`
-	Refresh                     int64    `json:"refresh_interval_ms"`
-	TTL                         int64    `json:"cache_ttl_ms"`
-	MaxEntries                  int      `json:"max_entries"`
-	TokenCookieName             string   `json:"token_cookie_name"`
-	TenantIDClaim               string   `json:"tenant_id_claim"`
-	UserIDClaim                 string   `json:"user_id_claim"`
-	ConnectivityTestEnabled     bool     `json:"connectivity_test_enabled"`
-	ConnectivityTestKey         string   `json:"connectivity_test_key"`
-	ConnectivityTestPeriod      int64    `json:"connectivity_test_interval_ms"`
-	ResponseHeaderEnabled       bool     `json:"response_header_enabled"`
+	Refresh                     int64    `json:"gateway_refresh_interval_seconds"`
+	TTL                         int64    `json:"gateway_cache_ttl_seconds"`
+	MaxEntries                  int      `json:"gray_max_entries"`
+	TokenCookieName             string   `json:"jwt_token_cookie_name"`
+	TenantIDClaim               string   `json:"jwt_tenant_id_claim"`
+	UserIDClaim                 string   `json:"jwt_user_id_claim"`
+	ConnectivityTestEnabled     bool     `json:"redis_connectivity_test_enabled"`
+	ConnectivityTestKey         string   `json:"redis_connectivity_test_key"`
+	ConnectivityTestPeriod      int64    `json:"redis_connectivity_test_interval_seconds"`
+	ResponseHeaderEnabled       bool     `json:"frontend_response_header_enabled"`
 	FrontendCookieName          string   `json:"frontend_gray_cookie_name"`
 	FrontendCookieDomain        string   `json:"frontend_gray_cookie_domain"`
 	FrontendCookieExcludedPaths []string `json:"frontend_gray_cookie_excluded_paths"`
@@ -64,14 +64,30 @@ func decodeSettings(raw string) (settings, error) {
 	cfg := settings{
 		Database: 0, TenantKey: "gray:whitelist:pc:tenantId", UserKey: "gray:whitelist:pc:userId", EnabledKey: "gray:whitelist:pc:enabled", Timeout: 1000,
 		ModeKey: "gray:whitelist:pc:mode", PercentKey: "gray:whitelist:pc:percent",
-		Refresh: 10000, TTL: 60000, MaxEntries: 10000,
+		Refresh: 10, TTL: 60, MaxEntries: 10000,
 		TokenCookieName: "PC_AUTH_TOKEN", TenantIDClaim: "tenantId", UserIDClaim: "id",
-		ConnectivityTestKey: "gray:whitelist:pc:connectivity-test", ConnectivityTestPeriod: 60000,
+		ConnectivityTestKey: "gray:whitelist:pc:connectivity-test", ConnectivityTestPeriod: 60,
 		ResponseHeaderEnabled: true,
 		FrontendCookieName:    "x-gray-user",
 	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return cfg, errors.New("invalid configuration types")
+	}
+	// Reject removed names instead of silently falling back to defaults.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return cfg, err
+	}
+	for _, old := range []string{
+		"redis_tenant_key", "redis_user_key", "cache_ttl_ms",
+		"response_header_enabled", "redis_connectivity_test_interval_ms",
+		"gateway_cache_ttl_ms", "gateway_refresh_interval_ms",
+		"max_entries", "refresh_interval_ms", "token_cookie_name", "tenant_id_claim", "user_id_claim",
+		"connectivity_test_enabled", "connectivity_test_key", "connectivity_test_interval_ms",
+	} {
+		if _, exists := fields[old]; exists {
+			return cfg, fmt.Errorf("removed configuration parameter: %s; use the new parameter name", old)
+		}
 	}
 	if cfg.Cluster == "" || cfg.TenantKey == "" || cfg.UserKey == "" || cfg.EnabledKey == "" || cfg.ModeKey == "" || cfg.PercentKey == "" {
 		return cfg, errors.New("redis_cluster and all Redis configuration keys must not be empty")
@@ -82,14 +98,14 @@ func decodeSettings(raw string) (settings, error) {
 	if cfg.Timeout < 100 || cfg.Timeout > 60000 {
 		return cfg, errors.New("redis_timeout_ms must be between 100 and 60000")
 	}
-	if cfg.Refresh < 1000 || cfg.Refresh > 3600000 || cfg.Refresh%100 != 0 {
-		return cfg, errors.New("refresh_interval_ms must be a multiple of 100 between 1000 and 3600000")
+	if cfg.Refresh < 1 || cfg.Refresh > 3600 {
+		return cfg, errors.New("gateway_refresh_interval_seconds must be an integer between 1 and 3600 seconds")
 	}
-	if cfg.TTL < cfg.Refresh || cfg.TTL > 86400000 {
-		return cfg, errors.New("cache_ttl_ms must be >= refresh_interval_ms and <= 86400000")
+	if cfg.TTL < 1 || cfg.TTL > 86400 || cfg.TTL < cfg.Refresh {
+		return cfg, errors.New("gateway_cache_ttl_seconds must be 1..86400 seconds and cover gateway_refresh_interval_seconds")
 	}
 	if cfg.MaxEntries < 1 || cfg.MaxEntries > 100000 {
-		return cfg, errors.New("max_entries must be between 1 and 100000")
+		return cfg, errors.New("gray_max_entries must be between 1 and 100000")
 	}
 	if !validSimpleName(cfg.TokenCookieName) || !validSimpleName(cfg.TenantIDClaim) ||
 		!validSimpleName(cfg.UserIDClaim) || cfg.TenantIDClaim == cfg.UserIDClaim {
@@ -100,10 +116,10 @@ func decodeSettings(raw string) (settings, error) {
 	}
 	if cfg.ConnectivityTestEnabled {
 		if cfg.ConnectivityTestKey == "" {
-			return cfg, errors.New("connectivity_test_key must not be empty when test is enabled")
+			return cfg, errors.New("redis_connectivity_test_key must not be empty when test is enabled")
 		}
-		if cfg.ConnectivityTestPeriod < 1000 || cfg.ConnectivityTestPeriod > 3600000 || cfg.ConnectivityTestPeriod%100 != 0 {
-			return cfg, errors.New("connectivity_test_interval_ms must be a multiple of 100 between 1000 and 3600000")
+		if cfg.ConnectivityTestPeriod < 1 || cfg.ConnectivityTestPeriod > 3600 {
+			return cfg, errors.New("redis_connectivity_test_interval_seconds must be an integer between 1 and 3600 seconds")
 		}
 	}
 	return cfg, nil
@@ -124,9 +140,9 @@ func parseConfig(js gjson.Result, config *Config) error {
 	config.runtime = r
 	// A separate cache per parsed rule prevents cross-rule/config-reload contamination.
 	// First SDK tick initiates loading; requests never wait for Redis.
-	wrapper.RegisterTickFunc(cfg.Refresh, r.refresh)
+	wrapper.RegisterTickFunc(cfg.Refresh*1000, r.refresh)
 	if cfg.ConnectivityTestEnabled {
-		wrapper.RegisterTickFunc(cfg.ConnectivityTestPeriod, r.writeConnectivityProbe)
+		wrapper.RegisterTickFunc(cfg.ConnectivityTestPeriod*1000, r.writeConnectivityProbe)
 	}
 	return nil
 }
