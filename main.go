@@ -17,6 +17,8 @@ import (
 )
 
 type settings struct {
+	IncludePathPrefixes         []string `json:"gateway_include_path_prefixes"`
+	ExcludePathPrefixes         []string `json:"gateway_exclude_path_prefixes"`
 	Cluster                     string   `json:"redis_cluster"`
 	Database                    int      `json:"redis_database"`
 	TenantKey                   string   `json:"gray_tenant_key"`
@@ -94,6 +96,13 @@ func decodeSettings(raw string) (settings, error) {
 	}
 	if cfg.Database < 0 || cfg.Database > 15 {
 		return cfg, errors.New("redis_database must be between 0 and 15")
+	}
+	for _, prefixes := range [][]string{cfg.IncludePathPrefixes, cfg.ExcludePathPrefixes} {
+		for _, prefix := range prefixes {
+			if !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "*?# \t\r\n") {
+				return cfg, errors.New("gateway path prefixes must start with / and contain no wildcard, query, fragment or whitespace")
+			}
+		}
 	}
 	if cfg.Timeout < 100 || cfg.Timeout > 60000 {
 		return cfg, errors.New("redis_timeout_ms must be between 100 and 60000")
@@ -198,10 +207,15 @@ func parseTypedSnapshot(v resp.Value, max int, selector func(string) (string, bo
 }
 
 func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
+	ctx.SetContext("gray-path-enabled", "false")
 	headers, err := proxywasm.GetHttpRequestHeaders()
 	if err != nil {
 		return headerFailure()
 	}
+	if cfg.runtime == nil || !gatewayPathEnabled(headers, cfg.runtime.cfg) {
+		return types.ActionContinue
+	}
+	ctx.SetContext("gray-path-enabled", "true")
 	stage := "stable"
 	if cfg.runtime != nil {
 		stage = cfg.runtime.stage(headers)
@@ -220,7 +234,7 @@ func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 }
 
 func onResponseHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
-	if cfg.runtime == nil {
+	if cfg.runtime == nil || ctx.GetStringContext("gray-path-enabled", "false") != "true" {
 		return types.ActionContinue
 	}
 	// Do not mutate redirects or error responses. Login redirects must pass
@@ -246,6 +260,28 @@ func onResponseHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 		}
 	}
 	return types.ActionContinue
+}
+
+// Use the path visible at this hook; later route rewrites cannot change this decision.
+func gatewayPathEnabled(headers [][2]string, cfg settings) bool {
+	for _, h := range headers {
+		if h[0] != ":path" {
+			continue
+		}
+		path, _, _ := strings.Cut(h[1], "?")
+		for _, prefix := range cfg.ExcludePathPrefixes {
+			if strings.HasPrefix(path, prefix) {
+				return false
+			}
+		}
+		for _, prefix := range cfg.IncludePathPrefixes {
+			if strings.HasPrefix(path, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func isSuccessfulResponse() bool {

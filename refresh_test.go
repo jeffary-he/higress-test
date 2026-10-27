@@ -32,7 +32,7 @@ func (q *queuedRedis) SMembers(key string, cb wrapper.RedisResponseCallback) err
 
 func TestModeRefreshAndFailure(t *testing.T) {
 	hosttest.RunGoTest(t, func(t *testing.T) {
-		host, _ := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"test"}`))
+		host, _ := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"test"}`))
 		defer host.Reset()
 		cfg, _ := decodeSettings(`{"redis_cluster":"test"}`)
 		now := time.Unix(1000, 0)
@@ -97,7 +97,7 @@ func TestModeRefreshAndFailure(t *testing.T) {
 
 func TestRefreshLateCallbackAndDispatchFailure(t *testing.T) {
 	hosttest.RunGoTest(t, func(t *testing.T) {
-		host, _ := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"test"}`))
+		host, _ := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"test"}`))
 		defer host.Reset()
 		cfg, _ := decodeSettings(`{"redis_cluster":"test"}`)
 		now := time.Unix(1000, 0)
@@ -180,7 +180,7 @@ func TestTrafficResponseCompatibility(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hosttest.RunGoTest(t, func(t *testing.T) {
-				host, _ := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"test","frontend_gray_cookie_name":"x-gray-frontend"}`))
+				host, _ := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"test","frontend_gray_cookie_name":"x-gray-frontend"}`))
 				defer host.Reset()
 				config, err := host.GetMatchConfig()
 				if err != nil {
@@ -236,7 +236,7 @@ func TestTrafficResponseCompatibility(t *testing.T) {
 
 func TestInvalidPercentRetainsWholeSnapshot(t *testing.T) {
 	hosttest.RunGoTest(t, func(t *testing.T) {
-		host, _ := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"test"}`))
+		host, _ := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"test"}`))
 		defer host.Reset()
 		cfg, _ := decodeSettings(`{"redis_cluster":"test"}`)
 		now := time.Now()

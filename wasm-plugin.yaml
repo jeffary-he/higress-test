@@ -5,12 +5,20 @@ metadata:
   namespace: higress-system
 spec:
   # Wasm 镜像地址。
-  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.0
+  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.1
   # 在认证阶段处理请求头，保证 x-gray-user 能参与后续路由匹配。
   phase: AUTHN
   # 同一执行阶段内的插件优先级，数字越小越优先。
   priority: 100
   defaultConfig:
+    # 域名级启用时，仅处理包含前缀且未命中排除前缀的路径。
+    gateway_include_path_prefixes:
+      - /api/
+    gateway_exclude_path_prefixes:
+      - /api/internal/v1/pc/login/actions/exchangeToken
+      - /api/v1/cs/
+      - /api/partners/
+      - /api/v1/integrator
     # ==================== Redis 连接配置 ====================
     # Envoy 中定义的 Redis 上游 Cluster 名称。
     redis_cluster: "outbound|6379||aws-redis.dns"
@@ -59,8 +67,7 @@ spec:
     # 可选：跨子域共享时填写，例如 .example.com。
     frontend_gray_cookie_domain: ""
     # 仅跳过前端灰度 Cookie 更新和刷新通知，不改变后端分流。
-    frontend_gray_cookie_excluded_paths:
-      - /api/internal/v1/pc/login/actions/exchangeToken
+    frontend_gray_cookie_excluded_paths: []
     # ==================== Redis 连通性测试 ====================
     # 仅用于临时测试 Redis 写入连通性，正常运行必须关闭。
     redis_connectivity_test_enabled: false

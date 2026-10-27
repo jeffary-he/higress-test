@@ -6,7 +6,7 @@ info:
   description: "支持白名单和流量两种互斥模式：白名单模式解析 JWT 的 tenantId/id，流量模式对完整 Token 做 SHA-256 分组。写入 x-gray-user 请求头，沿用前端灰度 Cookie 和刷新响应头。"
   x-description-i18n:
     en-US: Determine PC gray traffic by tenantId or id in PC_AUTH_TOKEN and add the x-gray-user request header inside the gateway.
-  version: 0.7.0
+  version: 0.7.1
   contact:
     name: Engineering Team
     email: engineering@example.com
@@ -17,6 +17,18 @@ spec:
     openAPIV3Schema:
       type: object
       properties:
+        gateway_include_path_prefixes:
+          type: array
+          title: 灰度包含路径前缀
+          description: 纯字符串前缀匹配，忽略查询参数；为空时跳过全部请求。不支持通配符。
+          items:
+            type: string
+        gateway_exclude_path_prefixes:
+          type: array
+          title: 灰度排除路径前缀
+          description: 优先于包含规则；命中后请求与响应均不做灰度处理，保留上游原始响应。
+          items:
+            type: string
         redis_cluster:
           type: string
           title: Redis Cluster

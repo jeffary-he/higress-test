@@ -1,6 +1,30 @@
-# Higress 租户/用户灰度插件 0.7.0
+# Higress 租户/用户灰度插件 0.7.1
 
-## 0.7.0 双模式
+## 0.7.1 路径作用域
+
+在域名级配置一套插件，通过以下前缀限定处理范围：
+
+```yaml
+gateway_include_path_prefixes:
+  - /api/
+gateway_exclude_path_prefixes:
+  - /api/internal/v1/pc/login/actions/exchangeToken
+  - /api/v1/cs/
+  - /api/partners/
+  - /api/v1/integrator
+```
+
+- 排除优先；只处理命中包含、且未命中任何排除前缀的请求。
+- 默认包含列表为空，跳过全部请求。升级必须配置包含列表；需要全路径处理时显式配置 `/`。
+- 纯字符串前缀匹配，区分大小写，忽略查询参数，不支持 `*`。例如 integrator 也排除 integratorExtra。
+- 使用请求头回调实际可见的路径；如果更早的过滤器已重写路径，配置必须匹配重写后的可见路径。
+- 在解析身份或修改 Header 前判断，并保存本次决定；响应阶段不重新判断路径。
+- 跳过时不修改请求 Header、Cookie、响应头或上游 Set-Cookie；不是拒绝请求，也不强制转到正式环境。
+- 原 `frontend_gray_cookie_excluded_paths` 仍是精确路径匹配，仅跳过 Cookie 更新及刷新通知；完整排除接口不必重复列入。
+- Redis 定时刷新不受路径过滤影响；过滤不新增请求路径上的 Redis 调用。
+- 建议域名级使用一份配置。部署文件中的 `defaultConfig` 本身不限定域名，需通过控制台域名级配置或对应 matchRules 限定域名作用域。
+
+## 0.7.1 双模式
 
 灰度总开关与模式由 Redis 下发，请求路径只使用本地完整快照。
 
@@ -139,7 +163,7 @@ WasmPlugin 外层配置：
 插件描述：根据配置的 Cookie 字段名称读取 JWT，从 JWT Payload 的 `tenantId` 或 `id` 判断灰度白名单，并在网关内部写入 `x-gray-user` 请求头，由 Higress 根据该请求头将请求路由到灰度或正常服务。
 
 ```yaml
-url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.0 # Wasm 镜像地址
+url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.1 # Wasm 镜像地址
 phase: AUTHN                                      # 认证阶段，先处理请求头再参与路由
 priority: 100                                     # 同阶段优先级，数字越小越优先
 ```
@@ -179,6 +203,14 @@ jwt_tenant_id_claim: "tenantId"
 jwt_user_id_claim: "id"
 
 # ==================== 本地缓存配置 ====================
+# 路径范围：排除优先，未命中包含时跳过全部灰度处理。
+gateway_include_path_prefixes:
+  - /api/
+gateway_exclude_path_prefixes:
+  - /api/internal/v1/pc/login/actions/exchangeToken
+  - /api/v1/cs/
+  - /api/partners/
+  - /api/v1/integrator
 # 从 Redis 同步开关和白名单的间隔，单位秒。
 gateway_refresh_interval_seconds: 10
 # 本地缓存最长有效时间，单位秒；超过后默认 stable。
@@ -265,7 +297,7 @@ go test ./...
 go vet ./...
 GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o main.wasm ./
 
-IMAGE="harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.0"
+IMAGE="harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.1"
 docker build --no-cache -t "$IMAGE" .
 docker push "$IMAGE"
 ```
@@ -273,7 +305,7 @@ docker push "$IMAGE"
 镜像 URL：
 
 ```text
-oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.0
+oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.1
 ```
 
 ## 验证

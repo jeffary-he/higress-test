@@ -42,7 +42,7 @@ func (f *fakeRedis) Incr(key string, cb wrapper.RedisResponseCallback) error {
 
 func TestConnectivityWriteProbe(t *testing.T) {
 	hosttest.RunGoTest(t, func(t *testing.T) {
-		host, _ := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"test"}`))
+		host, _ := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"test"}`))
 		defer host.Reset()
 		client := &fakeRedis{}
 		r := &runtimeState{
@@ -59,7 +59,7 @@ func TestConnectivityWriteProbe(t *testing.T) {
 
 func TestRefreshCallbacks(t *testing.T) {
 	hosttest.RunGoTest(t, func(t *testing.T) {
-		host, _ := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"test"}`))
+		host, _ := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"test"}`))
 		defer host.Reset()
 		now := time.Now()
 		client := &fakeRedis{}
@@ -295,7 +295,7 @@ func testJWT(payload string) string {
 
 func TestGatewayHeaderHook(t *testing.T) {
 	hosttest.RunGoTest(t, func(t *testing.T) {
-		host, status := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"outbound|6379||aws-redis.dns"}`))
+		host, status := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"outbound|6379||aws-redis.dns"}`))
 		defer host.Reset()
 		if status != types.OnPluginStartStatusOK {
 			t.Fatal("plugin failed to configure")
@@ -352,7 +352,7 @@ func TestCookieExcludedPath(t *testing.T) {
 func TestExcludedCookieHooks(t *testing.T) {
 	for _, canary := range []bool{false, true} {
 		hosttest.RunGoTest(t, func(t *testing.T) {
-			host, status := hosttest.NewTestHost(json.RawMessage(`{"redis_cluster":"redis","frontend_gray_cookie_name":"x-gray-frontend","frontend_gray_cookie_excluded_paths":["/api/internal/v1/pc/login/actions/exchangeToken"]}`))
+			host, status := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"redis","frontend_gray_cookie_name":"x-gray-frontend","frontend_gray_cookie_excluded_paths":["/api/internal/v1/pc/login/actions/exchangeToken"]}`))
 			defer host.Reset()
 			if status != types.OnPluginStartStatusOK {
 				t.Fatal("configuration failed")
