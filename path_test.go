@@ -34,6 +34,9 @@ func TestGatewayPathMatching(t *testing.T) {
 }
 
 func TestGatewayPathValidation(t *testing.T) {
+	if _, err := decodeSettings(`{"redis_cluster":"test","frontend_gray_cookie_excluded_paths":[]}`); err == nil {
+		t.Fatal("removed cookie-only exclusion must be rejected")
+	}
 	for _, key := range []string{"gateway_include_path_prefixes", "gateway_exclude_path_prefixes"} {
 		for _, prefix := range []string{"", "api/", "/api/*", "/api/?x", "/api/#x", "/api/ "} {
 			raw, _ := json.Marshal(map[string]any{"redis_cluster": "test", key: []string{prefix}})
@@ -52,12 +55,13 @@ func TestGatewayPathHooks(t *testing.T) {
 	}{
 		{"included", "/api/users?x=1", []string{"/api/"}, true},
 		{"excluded", "/api/v1/cs/users", []string{"/api/"}, false},
+		{"exchange", "/api/internal/v1/pc/login/actions/exchangeToken?code=123", []string{"/api/"}, false},
 		{"static", "/index.html", []string{"/api/"}, false},
 		{"empty", "/api/users", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hosttest.RunGoTest(t, func(t *testing.T) {
-				raw, _ := json.Marshal(map[string]any{"redis_cluster": "test", "gateway_include_path_prefixes": tc.include, "gateway_exclude_path_prefixes": []string{"/api/v1/cs/"}, "frontend_gray_cookie_name": "x-gray-frontend"})
+				raw, _ := json.Marshal(map[string]any{"redis_cluster": "test", "gateway_include_path_prefixes": tc.include, "gateway_exclude_path_prefixes": []string{"/api/v1/cs/", "/api/internal/v1/pc/login/actions/exchangeToken"}, "frontend_gray_cookie_name": "x-gray-frontend"})
 				host, status := hosttest.NewTestHost(raw)
 				defer host.Reset()
 				if status != types.OnPluginStartStatusOK {

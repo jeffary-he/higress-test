@@ -2,6 +2,8 @@
 
 ## 0.7.1 路径作用域
 
+仅保留网关级包含/排除规则；Cookie 专用排除功能已移除。旧参数会导致配置校验失败，请从部署配置删除，并将所需路径统一加入网关排除列表。
+
 在域名级配置一套插件，通过以下前缀限定处理范围：
 
 ```yaml
@@ -20,7 +22,6 @@ gateway_exclude_path_prefixes:
 - 使用请求头回调实际可见的路径；如果更早的过滤器已重写路径，配置必须匹配重写后的可见路径。
 - 在解析身份或修改 Header 前判断，并保存本次决定；响应阶段不重新判断路径。
 - 跳过时不修改请求 Header、Cookie、响应头或上游 Set-Cookie；不是拒绝请求，也不强制转到正式环境。
-- 原 `frontend_gray_cookie_excluded_paths` 仍是精确路径匹配，仅跳过 Cookie 更新及刷新通知；完整排除接口不必重复列入。
 - Redis 定时刷新不受路径过滤影响；过滤不新增请求路径上的 Redis 调用。
 - 建议域名级使用一份配置。部署文件中的 `defaultConfig` 本身不限定域名，需通过控制台域名级配置或对应 matchRules 限定域名作用域。
 
@@ -225,11 +226,6 @@ frontend_response_header_enabled: true
 frontend_gray_cookie_name: "x-gray-user"
 # 可选：跨子域共享时填写，例如 .example.com。
 frontend_gray_cookie_domain: ""
-# 精确匹配插件请求阶段看到的路径，忽略查询参数；默认空列表。
-# 排除接口仍正常进行后端灰度判断，保留登录服务自身的 Set-Cookie。
-# 若前置插件已重写路径，应配置实际可见路径。
-frontend_gray_cookie_excluded_paths:
-  - /api/internal/v1/pc/login/actions/exchangeToken
 
 # 仅当 x-gray-user Cookie 状态发生变化时，插件才返回：
 # x-frontend-gray-refresh: true

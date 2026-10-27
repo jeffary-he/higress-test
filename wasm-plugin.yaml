@@ -66,8 +66,6 @@ spec:
     frontend_gray_cookie_name: x-gray-user
     # 可选：跨子域共享时填写，例如 .example.com。
     frontend_gray_cookie_domain: ""
-    # 仅跳过前端灰度 Cookie 更新和刷新通知，不改变后端分流。
-    frontend_gray_cookie_excluded_paths: []
     # ==================== Redis 连通性测试 ====================
     # 仅用于临时测试 Redis 写入连通性，正常运行必须关闭。
     redis_connectivity_test_enabled: false

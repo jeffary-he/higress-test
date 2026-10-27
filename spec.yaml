@@ -131,12 +131,6 @@ spec:
           title: 前端灰度 Cookie Domain
           description: 可选的 Cookie Domain，用于跨子域共享。
           example: .example.com
-        frontend_gray_cookie_excluded_paths:
-          type: array
-          title: 前端灰度 Cookie 排除路径
-          description: 精确匹配请求阶段路径（忽略查询参数），不写入或删除灰度 Cookie、不生成刷新通知；后端分流和上游登录 Cookie 不受影响。默认空列表。
-          items:
-            type: string
         redis_connectivity_test_enabled:
           type: boolean
           title: Redis 连通性测试

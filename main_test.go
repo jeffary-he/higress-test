@@ -335,69 +335,6 @@ func TestGatewayHeaderHook(t *testing.T) {
 	})
 }
 
-func TestCookieExcludedPath(t *testing.T) {
-	const path = "/api/internal/v1/pc/login/actions/exchangeToken"
-	for _, tc := range []struct {
-		path string
-		want bool
-	}{
-		{path, true}, {path + "?code=123", true}, {path + "/extra", false}, {"/api/other", false},
-	} {
-		if got := frontendCookieExcluded([][2]string{{":path", tc.path}}, []string{path}); got != tc.want {
-			t.Fatalf("path %s: got %t", tc.path, got)
-		}
-	}
-}
-
-func TestExcludedCookieHooks(t *testing.T) {
-	for _, canary := range []bool{false, true} {
-		hosttest.RunGoTest(t, func(t *testing.T) {
-			host, status := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"redis","frontend_gray_cookie_name":"x-gray-frontend","frontend_gray_cookie_excluded_paths":["/api/internal/v1/pc/login/actions/exchangeToken"]}`))
-			defer host.Reset()
-			if status != types.OnPluginStartStatusOK {
-				t.Fatal("configuration failed")
-			}
-			cfg, err := host.GetMatchConfig()
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := cfg.(*Config).runtime
-			r.snapshot = &graySnapshot{enabled: true, mode: "whitelist", loadedAt: time.Now(), tenants: map[string]struct{}{"tenant:2": {}}}
-			cookie, stage := "x-gray-frontend=always", "stable"
-			if canary {
-				cookie = "PC_AUTH_TOKEN=" + testJWT(`{"tenantId":2}`)
-				stage = "canary"
-			}
-			host.CallOnHttpRequestHeaders([][2]string{{":method", "POST"}, {":path", "/api/internal/v1/pc/login/actions/exchangeToken?code=123"}, {":authority", "example.com"}, {"cookie", cookie}})
-			found := false
-			for _, h := range host.GetRequestHeaders() {
-				if h[0] == "x-gray-user" {
-					found = h[1] == stage
-				}
-			}
-			if !found {
-				t.Fatal("routing changed")
-			}
-			host.CallOnHttpResponseHeaders([][2]string{{":status", "200"}, {"set-cookie", "PC_AUTH_TOKEN=new; HttpOnly"}})
-			cookies := 0
-			for _, h := range host.GetResponseHeaders() {
-				if h[0] == "x-frontend-gray-refresh" {
-					t.Fatal("unexpected refresh")
-				}
-				if h[0] == "set-cookie" || h[0] == "Set-Cookie" {
-					cookies++
-					if h[1] != "PC_AUTH_TOKEN=new; HttpOnly" {
-						t.Fatal("unexpected cookie mutation")
-					}
-				}
-			}
-			if cookies != 1 {
-				t.Fatal("login cookie lost")
-			}
-		})
-	}
-}
-
 func TestRequestHeaderTakesPrecedence(t *testing.T) {
 	headers := [][2]string{{"x-gray-user", "canary"}, {"cookie", "PC_AUTH_TOKEN=invalid"}}
 	got := resolveStage(headers, "PC_AUTH_TOKEN", "tenantId", "id", func(string) bool { return false })

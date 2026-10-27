@@ -17,31 +17,30 @@ import (
 )
 
 type settings struct {
-	IncludePathPrefixes         []string `json:"gateway_include_path_prefixes"`
-	ExcludePathPrefixes         []string `json:"gateway_exclude_path_prefixes"`
-	Cluster                     string   `json:"redis_cluster"`
-	Database                    int      `json:"redis_database"`
-	TenantKey                   string   `json:"gray_tenant_key"`
-	UserKey                     string   `json:"gray_user_key"`
-	EnabledKey                  string   `json:"gray_enabled_key"`
-	ModeKey                     string   `json:"gray_mode_key"`
-	PercentKey                  string   `json:"gray_percent_key"`
-	Username                    string   `json:"redis_username"`
-	Password                    string   `json:"redis_password"`
-	Timeout                     int64    `json:"redis_timeout_ms"`
-	Refresh                     int64    `json:"gateway_refresh_interval_seconds"`
-	TTL                         int64    `json:"gateway_cache_ttl_seconds"`
-	MaxEntries                  int      `json:"gray_max_entries"`
-	TokenCookieName             string   `json:"jwt_token_cookie_name"`
-	TenantIDClaim               string   `json:"jwt_tenant_id_claim"`
-	UserIDClaim                 string   `json:"jwt_user_id_claim"`
-	ConnectivityTestEnabled     bool     `json:"redis_connectivity_test_enabled"`
-	ConnectivityTestKey         string   `json:"redis_connectivity_test_key"`
-	ConnectivityTestPeriod      int64    `json:"redis_connectivity_test_interval_seconds"`
-	ResponseHeaderEnabled       bool     `json:"frontend_response_header_enabled"`
-	FrontendCookieName          string   `json:"frontend_gray_cookie_name"`
-	FrontendCookieDomain        string   `json:"frontend_gray_cookie_domain"`
-	FrontendCookieExcludedPaths []string `json:"frontend_gray_cookie_excluded_paths"`
+	IncludePathPrefixes     []string `json:"gateway_include_path_prefixes"`
+	ExcludePathPrefixes     []string `json:"gateway_exclude_path_prefixes"`
+	Cluster                 string   `json:"redis_cluster"`
+	Database                int      `json:"redis_database"`
+	TenantKey               string   `json:"gray_tenant_key"`
+	UserKey                 string   `json:"gray_user_key"`
+	EnabledKey              string   `json:"gray_enabled_key"`
+	ModeKey                 string   `json:"gray_mode_key"`
+	PercentKey              string   `json:"gray_percent_key"`
+	Username                string   `json:"redis_username"`
+	Password                string   `json:"redis_password"`
+	Timeout                 int64    `json:"redis_timeout_ms"`
+	Refresh                 int64    `json:"gateway_refresh_interval_seconds"`
+	TTL                     int64    `json:"gateway_cache_ttl_seconds"`
+	MaxEntries              int      `json:"gray_max_entries"`
+	TokenCookieName         string   `json:"jwt_token_cookie_name"`
+	TenantIDClaim           string   `json:"jwt_tenant_id_claim"`
+	UserIDClaim             string   `json:"jwt_user_id_claim"`
+	ConnectivityTestEnabled bool     `json:"redis_connectivity_test_enabled"`
+	ConnectivityTestKey     string   `json:"redis_connectivity_test_key"`
+	ConnectivityTestPeriod  int64    `json:"redis_connectivity_test_interval_seconds"`
+	ResponseHeaderEnabled   bool     `json:"frontend_response_header_enabled"`
+	FrontendCookieName      string   `json:"frontend_gray_cookie_name"`
+	FrontendCookieDomain    string   `json:"frontend_gray_cookie_domain"`
 }
 
 type Config struct{ runtime *runtimeState }
@@ -82,6 +81,7 @@ func decodeSettings(raw string) (settings, error) {
 	}
 	for _, old := range []string{
 		"redis_tenant_key", "redis_user_key", "cache_ttl_ms",
+		"frontend_gray_cookie_excluded_paths",
 		"response_header_enabled", "redis_connectivity_test_interval_ms",
 		"gateway_cache_ttl_ms", "gateway_refresh_interval_ms",
 		"max_entries", "refresh_interval_ms", "token_cookie_name", "tenant_id_claim", "user_id_claim",
@@ -297,10 +297,6 @@ func trackFrontendCookie(ctx wrapper.HttpContext, headers [][2]string, runtime *
 	if runtime == nil {
 		return
 	}
-	if frontendCookieExcluded(headers, runtime.cfg.FrontendCookieExcludedPaths) {
-		ctx.SetContext("frontend-gray-refresh", "false")
-		return
-	}
 	value, count := findCookie(headers, runtime.cfg.FrontendCookieName)
 	if count == 1 && value == "always" {
 		ctx.SetContext("frontend-gray-cookie", "always")
@@ -314,23 +310,6 @@ func trackFrontendCookie(ctx wrapper.HttpContext, headers [][2]string, runtime *
 	} else {
 		ctx.SetContext("frontend-gray-refresh", "false")
 	}
-}
-
-// Match the request path visible at the request-header hook, before later rewrites.
-// Never strip upstream Set-Cookie headers: login cookies must pass through.
-func frontendCookieExcluded(headers [][2]string, excluded []string) bool {
-	for _, h := range headers {
-		if h[0] == ":path" {
-			path, _, _ := strings.Cut(h[1], "?")
-			for _, candidate := range excluded {
-				if path == candidate {
-					return true
-				}
-			}
-			return false
-		}
-	}
-	return false
 }
 
 func buildFrontendGrayCookie(cfg settings, stage string) string {
