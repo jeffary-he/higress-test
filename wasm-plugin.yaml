@@ -5,20 +5,15 @@ metadata:
   namespace: higress-system
 spec:
   # Wasm 镜像地址。
-  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.1
+  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.3
   # 在认证阶段处理请求头，保证 x-gray-user 能参与后续路由匹配。
   phase: AUTHN
-  # 同一执行阶段内的插件优先级，数字越小越优先。
+  # 同一执行阶段内的插件优先级，数字越大越优先。
   priority: 100
   defaultConfig:
-    # 域名级启用时，仅处理包含前缀且未命中排除前缀的路径。
+    # 路径命中此列表，且携带 jwt_token_cookie_name 指定的唯一非空 Token，才参与灰度。
     gateway_include_path_prefixes:
       - /api/
-    gateway_exclude_path_prefixes:
-      - /api/internal/v1/pc/login/actions/exchangeToken
-      - /api/v1/cs/
-      - /api/partners/
-      - /api/v1/integrator
     # ==================== Redis 连接配置 ====================
     # Envoy 中定义的 Redis 上游 Cluster 名称。
     redis_cluster: "outbound|6379||aws-redis.dns"
@@ -44,7 +39,7 @@ spec:
     gray_user_key: gray:whitelist:pc:userId
 
     # ==================== JWT 配置 ====================
-    # Cookie 中保存 JWT 的字段名。
+    # 入口条件：Cookie 中必须存在此名称的唯一非空 Token；与包含路径条件同时满足。
     jwt_token_cookie_name: PC_AUTH_TOKEN
     # JWT Payload 中的租户 ID 字段名。
     jwt_tenant_id_claim: tenantId

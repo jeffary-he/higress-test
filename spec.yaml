@@ -3,10 +3,10 @@ info:
   category: custom
   name: gray-whitelist
   title: PC 灰度白名单
-  description: "支持白名单和流量两种互斥模式：白名单模式解析 JWT 的 tenantId/id，流量模式对完整 Token 做 SHA-256 分组。写入 x-gray-user 请求头，沿用前端灰度 Cookie 和刷新响应头。"
+  description: "路径命中包含前缀且携带指定的唯一非空 Token Cookie 时才参与灰度。白名单模式解析 tenantId/id，流量模式对完整 Token 做 SHA-256 分组；按结果写入 x-gray-user，并处理前端 Cookie 和刷新头。"
   x-description-i18n:
-    en-US: Determine PC gray traffic by tenantId or id in PC_AUTH_TOKEN and add the x-gray-user request header inside the gateway.
-  version: 0.7.1
+    en-US: Process gray traffic only when the path matches an include prefix and the configured Token cookie is unique and nonempty. Use whitelist matching or full Token hashing, then update routing headers and frontend cookies.
+  version: 0.7.3
   contact:
     name: Engineering Team
     email: engineering@example.com
@@ -20,13 +20,7 @@ spec:
         gateway_include_path_prefixes:
           type: array
           title: 灰度包含路径前缀
-          description: 纯字符串前缀匹配，忽略查询参数；为空时跳过全部请求。不支持通配符。
-          items:
-            type: string
-        gateway_exclude_path_prefixes:
-          type: array
-          title: 灰度排除路径前缀
-          description: 优先于包含规则；命中后请求与响应均不做灰度处理，保留上游原始响应。
+          description: 纯字符串前缀匹配，忽略查询参数；还须携带 jwt_token_cookie_name 指定的唯一非空 Token 才参与处理。为空时跳过全部请求，不支持通配符。
           items:
             type: string
         redis_cluster:
@@ -104,7 +98,7 @@ spec:
         jwt_token_cookie_name:
           type: string
           title: JWT Cookie 名称
-          description: 保存 JWT 的 Cookie 字段名。
+          description: 请求必须携带此名称的唯一非空 Token Cookie，并命中包含路径，才进入灰度判断。缺失、为空或重复时请求及响应均跳过插件处理。
           example: PC_AUTH_TOKEN
         jwt_tenant_id_claim:
           type: string

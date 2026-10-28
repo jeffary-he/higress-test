@@ -18,7 +18,6 @@ import (
 
 type settings struct {
 	IncludePathPrefixes     []string `json:"gateway_include_path_prefixes"`
-	ExcludePathPrefixes     []string `json:"gateway_exclude_path_prefixes"`
 	Cluster                 string   `json:"redis_cluster"`
 	Database                int      `json:"redis_database"`
 	TenantKey               string   `json:"gray_tenant_key"`
@@ -79,6 +78,9 @@ func decodeSettings(raw string) (settings, error) {
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
 		return cfg, err
 	}
+	if _, exists := fields["gateway_exclude_path_prefixes"]; exists {
+		return cfg, errors.New("gateway_exclude_path_prefixes was removed in 0.7.3; remove it and use gateway_include_path_prefixes together with jwt_token_cookie_name")
+	}
 	for _, old := range []string{
 		"redis_tenant_key", "redis_user_key", "cache_ttl_ms",
 		"frontend_gray_cookie_excluded_paths",
@@ -97,11 +99,9 @@ func decodeSettings(raw string) (settings, error) {
 	if cfg.Database < 0 || cfg.Database > 15 {
 		return cfg, errors.New("redis_database must be between 0 and 15")
 	}
-	for _, prefixes := range [][]string{cfg.IncludePathPrefixes, cfg.ExcludePathPrefixes} {
-		for _, prefix := range prefixes {
-			if !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "*?# \t\r\n") {
-				return cfg, errors.New("gateway path prefixes must start with / and contain no wildcard, query, fragment or whitespace")
-			}
+	for _, prefix := range cfg.IncludePathPrefixes {
+		if !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "*?# \t\r\n") {
+			return cfg, errors.New("gateway path prefixes must start with / and contain no wildcard, query, fragment or whitespace")
 		}
 	}
 	if cfg.Timeout < 100 || cfg.Timeout > 60000 {
@@ -207,19 +207,16 @@ func parseTypedSnapshot(v resp.Value, max int, selector func(string) (string, bo
 }
 
 func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
-	ctx.SetContext("gray-path-enabled", "false")
+	ctx.SetContext("gray-request-enabled", "false")
 	headers, err := proxywasm.GetHttpRequestHeaders()
 	if err != nil {
 		return headerFailure()
 	}
-	if cfg.runtime == nil || !gatewayPathEnabled(headers, cfg.runtime.cfg) {
+	if cfg.runtime == nil || !gatewayRequestEnabled(headers, cfg.runtime.cfg) {
 		return types.ActionContinue
 	}
-	ctx.SetContext("gray-path-enabled", "true")
-	stage := "stable"
-	if cfg.runtime != nil {
-		stage = cfg.runtime.stage(headers)
-	}
+	ctx.SetContext("gray-request-enabled", "true")
+	stage := cfg.runtime.stage(headers)
 	output := rewriteHeadersWithStage(headers, stage)
 	// Remove all client gray routing headers. Keep the original Cookie untouched.
 	if err := proxywasm.ReplaceHttpRequestHeaders(output); err != nil {
@@ -234,7 +231,7 @@ func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 }
 
 func onResponseHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
-	if cfg.runtime == nil || ctx.GetStringContext("gray-path-enabled", "false") != "true" {
+	if cfg.runtime == nil || ctx.GetStringContext("gray-request-enabled", "false") != "true" {
 		return types.ActionContinue
 	}
 	// Do not mutate redirects or error responses. Login redirects must pass
@@ -262,6 +259,16 @@ func onResponseHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 	return types.ActionContinue
 }
 
+// Both conditions must hold before either gray mode or response mutation runs.
+// This only checks Token presence; mode-specific validation happens in stage.
+func gatewayRequestEnabled(headers [][2]string, cfg settings) bool {
+	if !gatewayPathEnabled(headers, cfg) {
+		return false
+	}
+	token, count := findCookie(headers, cfg.TokenCookieName)
+	return count == 1 && token != ""
+}
+
 // Use the path visible at this hook; later route rewrites cannot change this decision.
 func gatewayPathEnabled(headers [][2]string, cfg settings) bool {
 	for _, h := range headers {
@@ -269,11 +276,6 @@ func gatewayPathEnabled(headers [][2]string, cfg settings) bool {
 			continue
 		}
 		path, _, _ := strings.Cut(h[1], "?")
-		for _, prefix := range cfg.ExcludePathPrefixes {
-			if strings.HasPrefix(path, prefix) {
-				return false
-			}
-		}
 		for _, prefix := range cfg.IncludePathPrefixes {
 			if strings.HasPrefix(path, prefix) {
 				return true

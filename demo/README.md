@@ -1,6 +1,6 @@
 # 前后端灰度发布 Demo
 
-本 Demo 按 `gray-whitelist-wasm 0.7.1` 的白名单模式验证完整链路（未设置模式 Key 时默认为 whitelist）：
+本 Demo 按 `gray-whitelist-wasm 0.7.3` 的白名单模式验证完整链路（未设置模式 Key 时默认为 whitelist）：
 
 ```text
 PC_AUTH_TOKEN Cookie
@@ -39,12 +39,12 @@ kubectl apply -f k8s/ingress.yaml
 
 `canary.pontosense.net` 需要解析到 Higress Gateway。
 
-## 3. 配置 0.7.1 插件
+## 3. 配置 0.7.3 插件
 
 将根目录的 `wasm-plugin.yaml` 复制为环境配置，并修改：
 
 ```yaml
-url: oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.1
+url: oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.3
 ```
 
 Demo 的 API 路由必须绑定 `gray-whitelist` 插件。插件只绑定 `/api` 路由，不绑定前端静态资源路由；前端静态资源由 Higress 的 Cookie 灰度规则处理。
@@ -57,11 +57,12 @@ gray_tenant_key: gray:whitelist:pc:tenantId
 gray_user_key: gray:whitelist:pc:userId
 gateway_include_path_prefixes:
   - /api/
-gateway_exclude_path_prefixes: []
 jwt_token_cookie_name: PC_AUTH_TOKEN
 frontend_gray_cookie_name: x-gray-user
 frontend_gray_cookie_domain: ""
 ```
+
+只有路径命中 `/api/` 且携带唯一、非空的 `PC_AUTH_TOKEN`，才参与灰度判断。缺失、空值或重复 Token 会跳过请求及响应修改；升级时删除旧 `gateway_exclude_path_prefixes` 参数。
 
 ## 4. 初始化 Redis
 
@@ -129,5 +130,5 @@ x-frontend-gray-refresh: true
 
 - API `/api/**` 和前端 `/` 使用同一 Host，避免 Cookie 域名不一致。
 - API 路由和前端静态资源路由分开，避免登录/API 请求被转发到前端 Nginx。
-- 当前 0.7.1 只在 2xx 响应中写入或清理前端 Cookie；登录 302 不负责清理 Cookie。
+- 当前 0.7.3 只有满足路径和 Token 两个入口条件，才在 2xx 响应中写入或清理前端 Cookie；登录 302 不负责清理 Cookie。
 - Demo JWT 仅用于演示，当前插件只解码 Payload，不验证 JWT 签名。
