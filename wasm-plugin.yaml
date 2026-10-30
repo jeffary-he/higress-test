@@ -5,7 +5,7 @@ metadata:
   namespace: higress-system
 spec:
   # Wasm 镜像地址。
-  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.3
+  url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.4
   # 在认证阶段处理请求头，保证 x-gray-user 能参与后续路由匹配。
   phase: AUTHN
   # 同一执行阶段内的插件优先级，数字越大越优先。
@@ -61,6 +61,9 @@ spec:
     frontend_gray_cookie_name: x-gray-user
     # 可选：跨子域共享时填写，例如 .example.com。
     frontend_gray_cookie_domain: ""
+    # 命中这些路径前缀的成功响应才会新增或删除前端灰度 Cookie；查询参数会被忽略。
+    gateway_frontend_gray_cookie_include_path_prefixes:
+      - /api/gray/status
     # ==================== Redis 连通性测试 ====================
     # 仅用于临时测试 Redis 写入连通性，正常运行必须关闭。
     redis_connectivity_test_enabled: false

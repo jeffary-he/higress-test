@@ -17,29 +17,30 @@ import (
 )
 
 type settings struct {
-	IncludePathPrefixes     []string `json:"gateway_include_path_prefixes"`
-	Cluster                 string   `json:"redis_cluster"`
-	Database                int      `json:"redis_database"`
-	TenantKey               string   `json:"gray_tenant_key"`
-	UserKey                 string   `json:"gray_user_key"`
-	EnabledKey              string   `json:"gray_enabled_key"`
-	ModeKey                 string   `json:"gray_mode_key"`
-	PercentKey              string   `json:"gray_percent_key"`
-	Username                string   `json:"redis_username"`
-	Password                string   `json:"redis_password"`
-	Timeout                 int64    `json:"redis_timeout_ms"`
-	Refresh                 int64    `json:"gateway_refresh_interval_seconds"`
-	TTL                     int64    `json:"gateway_cache_ttl_seconds"`
-	MaxEntries              int      `json:"gray_max_entries"`
-	TokenCookieName         string   `json:"jwt_token_cookie_name"`
-	TenantIDClaim           string   `json:"jwt_tenant_id_claim"`
-	UserIDClaim             string   `json:"jwt_user_id_claim"`
-	ConnectivityTestEnabled bool     `json:"redis_connectivity_test_enabled"`
-	ConnectivityTestKey     string   `json:"redis_connectivity_test_key"`
-	ConnectivityTestPeriod  int64    `json:"redis_connectivity_test_interval_seconds"`
-	ResponseHeaderEnabled   bool     `json:"frontend_response_header_enabled"`
-	FrontendCookieName      string   `json:"frontend_gray_cookie_name"`
-	FrontendCookieDomain    string   `json:"frontend_gray_cookie_domain"`
+	IncludePathPrefixes               []string `json:"gateway_include_path_prefixes"`
+	Cluster                           string   `json:"redis_cluster"`
+	Database                          int      `json:"redis_database"`
+	TenantKey                         string   `json:"gray_tenant_key"`
+	UserKey                           string   `json:"gray_user_key"`
+	EnabledKey                        string   `json:"gray_enabled_key"`
+	ModeKey                           string   `json:"gray_mode_key"`
+	PercentKey                        string   `json:"gray_percent_key"`
+	Username                          string   `json:"redis_username"`
+	Password                          string   `json:"redis_password"`
+	Timeout                           int64    `json:"redis_timeout_ms"`
+	Refresh                           int64    `json:"gateway_refresh_interval_seconds"`
+	TTL                               int64    `json:"gateway_cache_ttl_seconds"`
+	MaxEntries                        int      `json:"gray_max_entries"`
+	TokenCookieName                   string   `json:"jwt_token_cookie_name"`
+	TenantIDClaim                     string   `json:"jwt_tenant_id_claim"`
+	UserIDClaim                       string   `json:"jwt_user_id_claim"`
+	ConnectivityTestEnabled           bool     `json:"redis_connectivity_test_enabled"`
+	ConnectivityTestKey               string   `json:"redis_connectivity_test_key"`
+	ConnectivityTestPeriod            int64    `json:"redis_connectivity_test_interval_seconds"`
+	ResponseHeaderEnabled             bool     `json:"frontend_response_header_enabled"`
+	FrontendCookieName                string   `json:"frontend_gray_cookie_name"`
+	FrontendCookieDomain              string   `json:"frontend_gray_cookie_domain"`
+	FrontendCookieIncludePathPrefixes []string `json:"gateway_frontend_gray_cookie_include_path_prefixes"`
 }
 
 type Config struct{ runtime *runtimeState }
@@ -67,8 +68,9 @@ func decodeSettings(raw string) (settings, error) {
 		Refresh: 10, TTL: 60, MaxEntries: 10000,
 		TokenCookieName: "PC_AUTH_TOKEN", TenantIDClaim: "tenantId", UserIDClaim: "id",
 		ConnectivityTestKey: "gray:whitelist:pc:connectivity-test", ConnectivityTestPeriod: 60,
-		ResponseHeaderEnabled: true,
-		FrontendCookieName:    "x-gray-user",
+		ResponseHeaderEnabled:             true,
+		FrontendCookieName:                "x-gray-user",
+		FrontendCookieIncludePathPrefixes: []string{"/api/gray/status"},
 	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return cfg, errors.New("invalid configuration types")
@@ -79,7 +81,7 @@ func decodeSettings(raw string) (settings, error) {
 		return cfg, err
 	}
 	if _, exists := fields["gateway_exclude_path_prefixes"]; exists {
-		return cfg, errors.New("gateway_exclude_path_prefixes was removed in 0.7.3; remove it and use gateway_include_path_prefixes together with jwt_token_cookie_name")
+		return cfg, errors.New("gateway_exclude_path_prefixes was removed in 0.7.4; remove it and use gateway_include_path_prefixes together with jwt_token_cookie_name")
 	}
 	for _, old := range []string{
 		"redis_tenant_key", "redis_user_key", "cache_ttl_ms",
@@ -122,6 +124,11 @@ func decodeSettings(raw string) (settings, error) {
 	}
 	if !validSimpleName(cfg.FrontendCookieName) {
 		return cfg, errors.New("frontend gray cookie name is invalid")
+	}
+	for _, prefix := range cfg.FrontendCookieIncludePathPrefixes {
+		if !validRequestPath(prefix) {
+			return cfg, errors.New("gateway_frontend_gray_cookie_include_path_prefixes must contain absolute paths without query, fragment or whitespace")
+		}
 	}
 	if cfg.ConnectivityTestEnabled {
 		if cfg.ConnectivityTestKey == "" {
@@ -226,7 +233,9 @@ func onRequestHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 	// response value on its next request, while the current request is also
 	// routed because x-gray-user was added before route recalculation.
 	ctx.SetContext("gray-stage", stage)
-	trackFrontendCookie(ctx, headers, cfg.runtime, stage)
+	if frontendCookieSyncRequest(headers, cfg.runtime.cfg) {
+		trackFrontendCookie(ctx, headers, cfg.runtime, stage)
+	}
 	return types.ActionContinue
 }
 
@@ -257,6 +266,22 @@ func onResponseHeaders(ctx wrapper.HttpContext, cfg Config) types.Action {
 		}
 	}
 	return types.ActionContinue
+}
+
+func frontendCookieSyncRequest(headers [][2]string, cfg settings) bool {
+	for _, h := range headers {
+		if h[0] != ":path" {
+			continue
+		}
+		path, _, _ := strings.Cut(h[1], "?")
+		for _, prefix := range cfg.FrontendCookieIncludePathPrefixes {
+			if strings.HasPrefix(path, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // Both conditions must hold before either gray mode or response mutation runs.
@@ -434,4 +459,9 @@ func validSimpleName(name string) bool {
 		}
 	}
 	return true
+}
+
+func validRequestPath(path string) bool {
+	return strings.HasPrefix(path, "/") &&
+		!strings.ContainsAny(path, "*?# \t\r\n")
 }

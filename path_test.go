@@ -86,7 +86,8 @@ func TestGatewayRequestGateHooks(t *testing.T) {
 						if cookieName == "" {
 							cookieName = "PC_AUTH_TOKEN"
 						}
-						raw, _ := json.Marshal(map[string]any{"redis_cluster": "test", "gateway_include_path_prefixes": include, "jwt_token_cookie_name": cookieName, "frontend_gray_cookie_name": "x-gray-frontend"})
+						syncPath, _, _ := strings.Cut(tc.path, "?")
+						raw, _ := json.Marshal(map[string]any{"redis_cluster": "test", "gateway_include_path_prefixes": include, "jwt_token_cookie_name": cookieName, "frontend_gray_cookie_name": "x-gray-frontend", "gateway_frontend_gray_cookie_include_path_prefixes": []string{syncPath}})
 						host, status := hosttest.NewTestHost(raw)
 						defer host.Reset()
 						if status != types.OnPluginStartStatusOK {

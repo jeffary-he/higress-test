@@ -1,6 +1,6 @@
 # 前后端灰度发布 Demo
 
-本 Demo 按 `gray-whitelist-wasm 0.7.3` 的白名单模式验证完整链路（未设置模式 Key 时默认为 whitelist）：
+本 Demo 按 `gray-whitelist-wasm 0.7.4` 的白名单模式验证完整链路（未设置模式 Key 时默认为 whitelist）：
 
 ```text
 PC_AUTH_TOKEN Cookie
@@ -39,12 +39,12 @@ kubectl apply -f k8s/ingress.yaml
 
 `canary.pontosense.net` 需要解析到 Higress Gateway。
 
-## 3. 配置 0.7.3 插件
+## 3. 配置 0.7.4 插件
 
 将根目录的 `wasm-plugin.yaml` 复制为环境配置，并修改：
 
 ```yaml
-url: oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.3
+url: oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.4
 ```
 
 Demo 的 API 路由必须绑定 `gray-whitelist` 插件。插件只绑定 `/api` 路由，不绑定前端静态资源路由；前端静态资源由 Higress 的 Cookie 灰度规则处理。
@@ -130,5 +130,5 @@ x-frontend-gray-refresh: true
 
 - API `/api/**` 和前端 `/` 使用同一 Host，避免 Cookie 域名不一致。
 - API 路由和前端静态资源路由分开，避免登录/API 请求被转发到前端 Nginx。
-- 当前 0.7.3 只有满足路径和 Token 两个入口条件，才在 2xx 响应中写入或清理前端 Cookie；登录 302 不负责清理 Cookie。
+- 当前 0.7.4 只有满足路径和 Token 两个入口条件，才在配置的 Cookie 同步路径前缀且 2xx 响应中写入或清理前端 Cookie；登录 302 不负责清理 Cookie。
 - Demo JWT 仅用于演示，当前插件只解码 Payload，不验证 JWT 签名。

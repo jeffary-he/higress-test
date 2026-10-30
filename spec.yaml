@@ -6,7 +6,7 @@ info:
   description: "路径命中包含前缀且携带指定的唯一非空 Token Cookie 时才参与灰度。白名单模式解析 tenantId/id，流量模式对完整 Token 做 SHA-256 分组；按结果写入 x-gray-user，并处理前端 Cookie 和刷新头。"
   x-description-i18n:
     en-US: Process gray traffic only when the path matches an include prefix and the configured Token cookie is unique and nonempty. Use whitelist matching or full Token hashing, then update routing headers and frontend cookies.
-  version: 0.7.3
+  version: 0.7.4
   contact:
     name: Engineering Team
     email: engineering@example.com
@@ -125,6 +125,14 @@ spec:
           title: 前端灰度 Cookie Domain
           description: 可选的 Cookie Domain，用于跨子域共享。
           example: .example.com
+        gateway_frontend_gray_cookie_include_path_prefixes:
+          type: array
+          title: 前端灰度 Cookie 同步接口前缀
+          description: 只有命中这些绝对路径前缀的成功响应会新增或删除前端灰度 Cookie，查询参数会被忽略；其他接口仍可参与后端灰度，但不会写入前端 Cookie。
+          items:
+            type: string
+          default:
+            - /api/gray/status
         redis_connectivity_test_enabled:
           type: boolean
           title: Redis 连通性测试

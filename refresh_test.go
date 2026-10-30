@@ -180,7 +180,7 @@ func TestTrafficResponseCompatibility(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hosttest.RunGoTest(t, func(t *testing.T) {
-				host, _ := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"test","frontend_gray_cookie_name":"x-gray-frontend"}`))
+				host, _ := hosttest.NewTestHost(json.RawMessage(`{"gateway_include_path_prefixes":["/"],"redis_cluster":"test","frontend_gray_cookie_name":"x-gray-frontend","gateway_frontend_gray_cookie_include_path_prefixes":["/api/status"]}`))
 				defer host.Reset()
 				config, err := host.GetMatchConfig()
 				if err != nil {

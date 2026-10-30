@@ -1,6 +1,6 @@
-# Higress 租户/用户灰度插件 0.7.3
+# Higress 租户/用户灰度插件 0.7.4
 
-插件在 Higress 中定时读取 Redis 灰度配置，并使用本地快照处理符合条件的 API 请求。支持白名单和流量两种模式，通过 `x-gray-user` 请求头参与后端路由，通过前端灰度 Cookie 和刷新响应头同步前端状态。
+插件在 Higress 中定时读取 Redis 灰度配置，并使用本地快照处理符合条件的 API 请求。支持白名单和流量两种模式，通过 `x-gray-user` 请求头参与后端路由；只有配置的前端灰度 Cookie 同步接口通过 Cookie 和刷新响应头同步前端状态。
 
 ## 请求入口条件
 
@@ -114,6 +114,8 @@ x-gray-user: canary
 x-gray-user: stable
 ```
 
+后端灰度判断仍适用于所有满足入口条件的请求，但前端 `x-gray-user` Cookie 只在 `gateway_frontend_gray_cookie_include_path_prefixes` 配置的路径前缀成功响应中新增或删除。路径匹配忽略查询参数，默认是 `/api/gray/status`，用于避免并发业务 API 响应反复写入 Cookie。多个前缀命中任意一个即可。
+
 后端灰度路由示例：
 
 ```yaml
@@ -185,7 +187,7 @@ WasmPlugin 外层配置：
 插件描述：路径命中包含前缀且携带指定的唯一非空 Token Cookie 时，按白名单或流量模式判断灰度，在网关内部写入 `x-gray-user` 请求头，并按请求 Cookie 差异同步前端灰度状态。
 
 ```yaml
-url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.3 # Wasm 镜像地址
+url: oci://YOUR_REGISTRY/gray-whitelist-wasm:0.7.4 # Wasm 镜像地址
 phase: AUTHN                                      # 认证阶段，先处理请求头再参与路由
 priority: 100                                     # 同阶段优先级，数字越大越优先
 ```
@@ -304,7 +306,7 @@ go test ./...
 go vet ./...
 GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o main.wasm ./
 
-IMAGE="harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.3"
+IMAGE="harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.4"
 docker build --no-cache -t "$IMAGE" .
 docker push "$IMAGE"
 ```
@@ -312,7 +314,7 @@ docker push "$IMAGE"
 镜像 URL：
 
 ```text
-oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.3
+oci://harbor-ningxia.pontosense.net/base-image/gray-whitelist-wasm:0.7.4
 ```
 
 ## 验证
